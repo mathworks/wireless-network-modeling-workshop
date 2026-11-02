@@ -1,4 +1,4 @@
-function plotTrafficPattern(simulationDuration,cfgPeriodic)
+function hPlotTrafficPattern(simulationDuration,cfgPeriodic)
 currentTime = 0;         % Current simulation time
 packetSizeBits = cfgPeriodic.PacketSize*8;              % Convert packet size from bytes to bits
 dataRateSeconds = cfgPeriodic.DataRate*1000;            % Convert data rate from kilobits/second to bits/second

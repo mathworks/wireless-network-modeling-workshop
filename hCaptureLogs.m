@@ -1,4 +1,4 @@
-function  captureLogs(simSchedulingLogger,simPhyLogger,gNB)
+function  hCaptureLogs(simSchedulingLogger,simPhyLogger,gNB)
 simulationLogFile = "simulationLogs";
     simulationLogs = cell(1,1);
     if gNB.DuplexMode == "FDD"
