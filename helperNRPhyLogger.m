@@ -1,45 +1,58 @@
 classdef helperNRPhyLogger < handle
     %helperNRPhyLogger Phy statistics logging object
-    %   The class implements per slot/symbol logging mechanism
-    %   of the physical layer metrics. It is used to log the statistics of a cell
+    %   The class implements per slot/symbol logging mechanism of the physical
+    %   layer metrics. It is used to log the statistics in case of multiple
+    %   carriers.
     %
     %   helperNRPhyLogger Name-Value pairs:
     %
     %   LinkDirection     - Indicate the link direction in which logging is performed
+    %   CarrierID         - Indicate index of the carrier(s) to log
 
     %   Copyright 2022-2026 The MathWorks, Inc.
 
     properties
-        %NCellID Cell ID to which the logging belongs
-        NCellID (1, 1) {mustBeInteger, mustBeInRange(NCellID, 0, 1007)} = 1;
+        % LinkDirection indicates the directions in which logging is performed. It
+        % takes values "DL","UL" and "Both". By default, the value is set to
+        % "Both", indicating that logs are recorded for both directions.
+        LinkDirection (1,1) string {mustBeMember(LinkDirection, ["DL", "UL", "Both"])} = "Both";
 
-        % NumUEs Count of UEs in a cell
-        NumUEs
+        % CarrierID indicates index of the carrier(s) to log. If specified, logging is
+        % performed only for the given carrier(s). Default is 1 (gNB first carrier).
+        CarrierID (1,:) {mustBeVector, mustBePositive} = 1;
+    end
+
+    properties
+        % NumCarriers Number of carriers
+        NumCarriers
+
+        % NumUEsPerCarrier Number of UEs on each carrier (1-by-NumCarriers)
+        NumUEsPerCarrier
+
+        % UERNTIsPerCarrier RNTIs of UEs served on each carrier
+        % It is a 1-by-NumCarriers cell array. Each element is a row vector
+        % of UE RNTIs served on that carrier.
+        UERNTIsPerCarrier
 
         % NumSlotsFrame Number of slots in a 10ms time frame
         NumSlotsFrame
 
         % RxStatsLog Slot-by-slot/symbol-by-symbol log of the Rx statistics
+        % It is a 1-by-NumCarriers cell array. Each element contains the
+        % per-symbol log for that carrier.
         RxStatsLog
 
         % ColumnIndexMap Mapping the column names of logs to respective column indices
         % It is a map object
         ColumnIndexMap
-
-        % SchedulingType Type of scheduling (slot based or symbol based)
-        % Value 0 means slot based and value 1 means symbol based. The
-        % default value is 0
-        SchedulingType (1, 1) {mustBeInteger, mustBeInRange(SchedulingType, 0, 1)} = 0;
-
-        % LinkDirection indicates the directions in which logging is performed. It
-        % takes values "DL","UL" and "Both". By default, the value is set to
-        % "Both", indicating that logs are recorded for both directions.
-        LinkDirection (1,1) string {mustBeMember(LinkDirection, ["DL", "UL", "Both"])} = "Both";
     end
 
     properties (SetAccess = private)
-        % UEIdList RNTIs of UEs in a cell as row vector
-        UEIdList
+        %UECarrierIndexMap Mapping from gNB carrier index to UE carrier index
+        % It is a 1-by-NumCarriers cell array. Each element is a vector of length
+        % NumUEsPerCarrier containing the UE carrier index for each UE on that gNB
+        % carrier.
+        UECarrierIndexMap
     end
 
     properties(Access = private)
@@ -56,27 +69,32 @@ classdef helperNRPhyLogger < handle
         CurrSymbol = -1
 
         %UERxStats Downlink receiver side statistics for the current symbol
-        % It is an N-by-2 array, where N is the number of UEs. First and second
-        % columns of the array contains the number of erroneous packets received
-        % and the total number of received packets for each UE respectively
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 array
+        % where N is the total number of UEs connected with the gNB's first
+        % carrier. First and second columns contain the number of erroneous packets
+        % received and the total number of received packets for each UE
+        % respectively
         UERxStats
 
         %GNBRxStats Uplink receiver side statistics for the current symbol
-        % It is an N-by-2 array, where N is the number of UEs. First and
-        % second columns of the array contains the number of erroneous packets
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 array
+        % where N is the total number of UEs connected with the gNB's first
+        % carrier. First and second columns contain the number of erroneous packets
         % received and the total number of received packets from each UE
         % respectively
         GNBRxStats
 
         %PrevCumulativeULBlkErr Cumulative uplink block error information returned in the last query
-        % It is an array of size N-by-2 where N is the number of UEs,
-        % columns 1 and 2 contains the number of erroneously received
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 array
+        % where N is the total number of UEs connected with the gNB's first
+        % carrier. Columns 1 and 2 contains the number of erroneously received
         % packets and total received packets, respectively
         PrevCumulativeULBlkErr
 
         %PrevCumulativeDLBlkErr Cumulative downlink block error information returned in the last query
-        % It is an array of size N-by-2 where N is the number of UEs,
-        % columns 1 and 2 contains the number of erroneously received
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 array
+        % where N is the total number of UEs connected with the gNB's first
+        % carrier.Columns 1 and 2 contains the number of erroneously received
         % packets and total received packets, respectively
         PrevCumulativeDLBlkErr
 
@@ -121,6 +139,9 @@ classdef helperNRPhyLogger < handle
             % OBJ = helperNRPhyLogger(NUMFRAMESSIM, GNB, UEs, LinkDirection=linkDir) Create a
             % Phy logging object for logging the traces.
             %
+            % OBJ = helperNRPhyLogger(NUMFRAMESSIM, GNB, UEs, LinkDirection=linkDir, CarrierID=n) 
+            % Create a Phy logging object for logging the traces on the given CarrierID.
+            %
             % NumFramesSim - Simulation time in terms of number of 10 ms frames
             %
             % GNB - It is a scalar and object of type nrGNB
@@ -131,9 +152,17 @@ classdef helperNRPhyLogger < handle
             % LinkDirection - Link direction in which logging is performed.It takes
             %                 values "DL","UL" and "Both". By default, the value is set to
             %                 "Both", indicating that logs are recorded for both directions.
+            %
+            % CarrierID    - Index of the carrier(s) to log. If specified, logging is
+            %                performed only for the given carrier(s). Default is 1 (gNB
+            %                first carrier). This is according to the order of carriers
+            %                at the gNB.
 
             obj.GNB = gNB;
-            obj.UEs = UEs;
+            % Sort UEs by RNTI so that obj.UEs(rnti) is always correct
+            [~, sortOrder] = sort([UEs.RNTI]);
+            obj.UEs = UEs(sortOrder);
+            numTotalUEs = numel(UEs);
             % Initialize the properties
             for idx = 1:2:numel(varargin)
                 obj.(varargin{idx}) = varargin{idx+1};
@@ -141,22 +170,59 @@ classdef helperNRPhyLogger < handle
             if isempty(obj.NetworkSimulator)
                 obj.NetworkSimulator = wirelessNetworkSimulator.getInstance();
             end
-            obj.NCellID = gNB.NCellID(1);
-            schedulerConfig = gNB.MACEntity.Scheduler.SchedulerConfig;
-            obj.SchedulingType = schedulerConfig.SchedulingType;
             obj.ColumnIndexMap = containers.Map('KeyType','char','ValueType','double');
-            obj.NumUEs = numel(obj.UEs);
-            obj.UEIdList = 1:obj.NumUEs;
             obj.NumSlotsFrame = (10 * gNB.SubcarrierSpacing) / 15e3; % Number of slots in a 10 ms frame
+            obj.NumCarriers = numel(gNB.ComponentCarrierConfig);
 
-            % Rx stats
-            % Each row represents the statistics of each slot
-            obj.RxStatsLog = constructLogFormat(obj, numFramesSim);
+            % Determine which UEs are connected to each carrier
+            obj.UERNTIsPerCarrier = cell(1, obj.NumCarriers);
+            if isprop(gNB, 'UEInfoPerCarrier')
+                for carrierIdx = 1:obj.NumCarriers
+                    obj.UERNTIsPerCarrier{carrierIdx} = gNB.UEInfoPerCarrier(carrierIdx).UERNTIs;
+                end
+            else
+                % Backward compatible: single carrier uses all the connected UEs
+                obj.UERNTIsPerCarrier{1} = 1:numel(obj.UEs);
+            end
+            obj.NumUEsPerCarrier = zeros(1, obj.NumCarriers);
+            for carrierIdx = 1:obj.NumCarriers
+                obj.NumUEsPerCarrier(carrierIdx) = numel(obj.UERNTIsPerCarrier{carrierIdx});
+            end
 
-            obj.UERxStats = zeros(obj.NumUEs, 2);
-            obj.GNBRxStats = zeros(obj.NumUEs, 2);
-            obj.PrevCumulativeULBlkErr = zeros(obj.NumUEs, 2);
-            obj.PrevCumulativeDLBlkErr = zeros(obj.NumUEs, 2);
+            % Build UE carrier index map by matching gNB DL carrier
+            % frequency against each UE's ReceiveFrequency. This correctly
+            % resolves the UE PhyEntity index regardless of the order in
+            % which secondary carriers were added.
+            obj.UECarrierIndexMap = cell(1, obj.NumCarriers);
+            gNBDLFreq = gNB.DLCarrierFrequency;
+            for carrierIdx = 1:obj.NumCarriers
+                connectedUEs = obj.UERNTIsPerCarrier{carrierIdx};
+                numUEsCC = obj.NumUEsPerCarrier(carrierIdx);
+                uePhyIdx = zeros(1, numUEsCC);
+                for posIdx = 1:numUEsCC
+                    ueIdx = connectedUEs(posIdx);
+                    [~, uePhyIdx(posIdx)] = ismember(gNBDLFreq(carrierIdx), obj.UEs(ueIdx).ReceiveFrequency);
+                end
+                obj.UECarrierIndexMap{carrierIdx} = uePhyIdx;
+            end
+
+            % Rx stats: one log per carrier, all using same vector length
+            % (total number of UEs). Position i stores metric for UE with RNTI i.
+            obj.RxStatsLog = cell(1, obj.NumCarriers);
+            for carrierIdx = 1:obj.NumCarriers
+                obj.RxStatsLog{carrierIdx} = constructLogFormat(obj, numFramesSim, numTotalUEs);
+            end
+
+            obj.UERxStats = cell(1, obj.NumCarriers);
+            obj.GNBRxStats = cell(1, obj.NumCarriers);
+            obj.PrevCumulativeULBlkErr = cell(1, obj.NumCarriers);
+            obj.PrevCumulativeDLBlkErr = cell(1, obj.NumCarriers);
+            for carrierIdx = 1:obj.NumCarriers
+                obj.UERxStats{carrierIdx} = zeros(numTotalUEs, 2);
+                obj.GNBRxStats{carrierIdx} = zeros(numTotalUEs, 2);
+                obj.PrevCumulativeULBlkErr{carrierIdx} = zeros(numTotalUEs, 2);
+                obj.PrevCumulativeDLBlkErr{carrierIdx} = zeros(numTotalUEs, 2);
+            end
 
             % Register periodic logging event with network simulator
             phyLogPeriodicity = ((15e3/gNB.SubcarrierSpacing)/14) * 1e-3; % In seconds
@@ -164,69 +230,104 @@ classdef helperNRPhyLogger < handle
         end
 
         function [dlPhyMetrics, ulPhyMetrics] = getPhyMetrics(obj, firstSlot, lastSlot, rntiList)
-            %getPhyMetrics Return the Phy metrics
+            %getPhyMetrics Return the Phy metrics for the configured carriers
             %
             % [DLMETRICS, ULMETRICS] = getPhyMetrics(OBJ, FIRSTSLOT,
             % LASTSLOT, RNTILIST) returns the Phy metrics of the UEs with
-            % specified RNTIs for both uplink and downlink
+            % specified RNTIs for both uplink and downlink on obj.CarrierID.
             %
             % FIRSTSLOT - Represents the starting slot number for querying the metrics
             %
             % LASTSLOT  - Represents the ending slot for querying the metrics
             %
-            % RNTILIST - Radio network temporary identifiers of a vector of UEs
+            % RNTILIST - Radio network temporary identifiers of a vector of UEs.
+            %            Assumes all UEs in rntiList are present on each carrier.
             %
-            % ULPHYMETRICS - It contains Phy metrics in uplink direction
+            % DLPHYMETRICS - Struct array of size [numel(rntiList), numel(CarrierID)].
+            %                Each element contains DL metrics for one UE on one carrier.
+            %                Empty when LinkDirection is "UL".
             %
-            % DLPHYMETRICS - It contains Phy metrics in downlink direction
+            % ULPHYMETRICS - Struct array of size [numel(rntiList), numel(CarrierID)].
+            %                Each element contains UL metrics for one UE on one carrier.
+            %                Empty when LinkDirection is "DL".
             %
-            % ULPHYMETRICS and DLPHYMETRICS are structures with following properties
-            %
-            %   RNTI - Radio network temporary identifier of a UE
-            %
+            % Each struct has the fields:
+            %   RNTI           - Radio network temporary identifier of the UE
             %   DecodeFailures - Total number of decode failures
-            %
-            %   TotalPackets - Total number of packets
+            %   TotalPackets   - Total number of packets
 
-            outputStruct = repmat(struct('RNTI',0,'TotalPackets',0,'DecodeFailures',0),[numel(rntiList) 2]);
+            carrierIndices = obj.CarrierID;
+            numCarriersQuery = numel(carrierIndices);
+            numUEs = numel(rntiList);
+            emptyStruct = repmat(struct('RNTI',0,'TotalPackets',0,'DecodeFailures',0), [0 0]);
             stepLogStartIdx = (firstSlot-1) * obj.NumSym + 1;
             stepLogEndIdx = lastSlot * obj.NumSym;
             columnMap = obj.ColumnIndexMap;
-            metricsColumnIndex = [columnMap('Number of Decode Failures(DL)'),...
-                columnMap('Number of Packets(DL)'); columnMap('Number of Decode Failures(UL)'),...
-                columnMap('Number of Packets(UL)')];
 
-            % Index at which UE's information is stored
-            [~,ueIdxList] = ismember(rntiList, obj.UEIdList);
-            for logIdx = 1:2
-                rxStatsLogs = zeros(numel(rntiList), 2);
-                for stepIdx = stepLogStartIdx:stepLogEndIdx
-                    rxStatsLogs(:, 1) = rxStatsLogs(:, 1) + obj.RxStatsLog{stepIdx, metricsColumnIndex(logIdx, 1)}(ueIdxList);
-                    rxStatsLogs(:, 2) = rxStatsLogs(:, 2) + obj.RxStatsLog{stepIdx, metricsColumnIndex(logIdx, 2)}(ueIdxList);
-                end
+            % Determine which directions to process
+            isDL = obj.LinkDirection ~= "UL";
+            isUL = obj.LinkDirection ~= "DL";
 
-                for ueIdx = 1:numel(rntiList)
-                    outputStruct(ueIdx, logIdx).RNTI = rntiList(ueIdx);
-                    outputStruct(ueIdx, logIdx).DecodeFailures = rxStatsLogs(ueIdx, 1);
-                    outputStruct(ueIdx, logIdx).TotalPackets = rxStatsLogs(ueIdx, 2);
-                end
+            % Initialize outputs
+            if isDL
+                dlPhyMetrics = repmat(struct('RNTI',0,'TotalPackets',0,'DecodeFailures',0), [numUEs, numCarriersQuery]);
+            else
+                dlPhyMetrics = emptyStruct;
+            end
+            if isUL
+                ulPhyMetrics = repmat(struct('RNTI',0,'TotalPackets',0,'DecodeFailures',0), [numUEs, numCarriersQuery]);
+            else
+                ulPhyMetrics = emptyStruct;
             end
 
-            dlPhyMetrics = outputStruct(:, obj.DownlinkIdx);
-            ulPhyMetrics = outputStruct(:, obj.UplinkIdx);
+            for cIdx = 1:numCarriersQuery
+                carrierIdx = carrierIndices(cIdx);
+
+                % Process DL metrics only if configured
+                if isDL
+                    decodeFailCol = columnMap('Number of Decode Failures(DL)');
+                    numPktsCol = columnMap('Number of Packets(DL)');
+                    rxStatsLogs = zeros(numUEs, 2);
+                    for stepIdx = stepLogStartIdx:stepLogEndIdx
+                        rxStatsLogs(:, 1) = rxStatsLogs(:, 1) + obj.RxStatsLog{carrierIdx}{stepIdx, decodeFailCol}(rntiList);
+                        rxStatsLogs(:, 2) = rxStatsLogs(:, 2) + obj.RxStatsLog{carrierIdx}{stepIdx, numPktsCol}(rntiList);
+                    end
+                    for ueIdx = 1:numUEs
+                        dlPhyMetrics(ueIdx, cIdx).RNTI = rntiList(ueIdx);
+                        dlPhyMetrics(ueIdx, cIdx).DecodeFailures = rxStatsLogs(ueIdx, 1);
+                        dlPhyMetrics(ueIdx, cIdx).TotalPackets = rxStatsLogs(ueIdx, 2);
+                    end
+                end
+
+                % Process UL metrics only if configured
+                if isUL
+                    decodeFailCol = columnMap('Number of Decode Failures(UL)');
+                    numPktsCol = columnMap('Number of Packets(UL)');
+                    rxStatsLogs = zeros(numUEs, 2);
+                    for stepIdx = stepLogStartIdx:stepLogEndIdx
+                        rxStatsLogs(:, 1) = rxStatsLogs(:, 1) + obj.RxStatsLog{carrierIdx}{stepIdx, decodeFailCol}(rntiList);
+                        rxStatsLogs(:, 2) = rxStatsLogs(:, 2) + obj.RxStatsLog{carrierIdx}{stepIdx, numPktsCol}(rntiList);
+                    end
+                    for ueIdx = 1:numUEs
+                        ulPhyMetrics(ueIdx, cIdx).RNTI = rntiList(ueIdx);
+                        ulPhyMetrics(ueIdx, cIdx).DecodeFailures = rxStatsLogs(ueIdx, 1);
+                        ulPhyMetrics(ueIdx, cIdx).TotalPackets = rxStatsLogs(ueIdx, 2);
+                    end
+                end
+            end
         end
 
         function receptionLogs = getReceptionLogs(obj)
             %getReceptionLogs Return the Phy reception logs
             %
-            % RECEPTIONLOGS = getReceptionLogs(OBJ) Returns the Phy reception logs
+            % RECEPTIONLOGS = getReceptionLogs(OBJ) Returns the Phy reception
+            % logs for the carrier specified by obj.CarrierID.
             %
-            % RECEPTIONLOGS - It is (N+1)-by-P cell, where N represents the number of
-            % slots in the simulation and P represents the number of columns for
-            % slot-based scheduling. For symbol-based scheduling, N represents the
-            % number of symbols in the simulation. The first row of the logs contains
-            % titles for the logs. Each row (excluding the first row) in the logs
-            % represents a slot and contains the following information.
+            % RECEPTIONLOGS - It is an (N+1)-by-P cell, where N represents the
+            % number of symbols in the simulation and P represents the number of
+            % columns. The first row of the logs contains titles for the logs.
+            % Each row (excluding the first row) in the logs represents a symbol
+            % and contains the following information.
             %  Frame                           - Frame number.
             %  Slot                            - Slot number in the frame.
             %  Symbol number                   - Symbol number in the slot
@@ -250,7 +351,11 @@ classdef helperNRPhyLogger < handle
 
             % Most recent log index for the current simulation
             lastLogIndex = (obj.CurrFrame)*obj.NumSlotsFrame*obj.NumSym + (obj.CurrSlot+1)*obj.NumSym;
-            receptionLogs = [columnTitles; obj.RxStatsLog(1:lastLogIndex , :)];
+            carrierIndices = obj.CarrierID;
+            receptionLogs = cell(1, numel(carrierIndices));
+            for cIdx = 1:numel(carrierIndices)
+                receptionLogs{cIdx} = [columnTitles; obj.RxStatsLog{carrierIndices(cIdx)}(1:lastLogIndex, :)];
+            end
         end
     end
 
@@ -258,36 +363,48 @@ classdef helperNRPhyLogger < handle
         function logCellPhyStats(obj, ~, ~)
             %logCellPhyStats Log the Phy layer statistics
 
-            % Read the DL Rx stats for each UE for the primary carrier
-            if obj.LinkDirection ~= "UL"
-                for ueIdx = 1:obj.NumUEs
-                    ueStats = [obj.UEs(ueIdx).PhyEntity(1).StatDecodeFailures obj.UEs(ueIdx).PhyEntity(1).StatReceivedPackets];
-                    obj.UERxStats(ueIdx, :) = ueStats - obj.PrevCumulativeDLBlkErr(ueIdx, :);
-                    obj.PrevCumulativeDLBlkErr(ueIdx, :) = ueStats;
-                end
-            else
-                obj.UERxStats = zeros(obj.NumUEs, 2);
-            end
-
-            % Read the UL Rx stats for each UE from gNB on the first carrier
-            if obj.LinkDirection ~= "DL"
-                gnbStats = [obj.GNB.PhyEntity(1).StatDecodeFailures obj.GNB.PhyEntity(1).StatReceivedPackets];
-                obj.GNBRxStats = gnbStats - obj.PrevCumulativeULBlkErr;
-                obj.PrevCumulativeULBlkErr = gnbStats;
-            else
-                obj.GNBRxStats = zeros(obj.NumUEs, 2);
-            end
-
             obj.LogIndexCounter = obj.LogIndexCounter + 1;
-            % Log the UL and DL reception stats
-            logRxStats(obj, obj.LogIndexCounter, obj.UERxStats, obj.GNBRxStats)
+            numTotalUEs = numel(obj.UEs);
+            for carrierIdx = obj.CarrierID
+                numUEsCC = obj.NumUEsPerCarrier(carrierIdx);
+                connectedUEs = obj.UERNTIsPerCarrier{carrierIdx};
+                uePhyIdx = obj.UECarrierIndexMap{carrierIdx};
+
+                % Read the DL Rx stats for each UE on this carrier
+                if obj.LinkDirection ~= "UL"
+                    for posIdx = 1:numUEsCC
+                        ueIdx = connectedUEs(posIdx);
+                        carrierPHY = obj.UEs(ueIdx).PhyEntity(uePhyIdx(posIdx));
+                        ueStats = [carrierPHY.StatDecodeFailures carrierPHY.StatReceivedPackets];
+                        obj.UERxStats{carrierIdx}(ueIdx, :) = ueStats - obj.PrevCumulativeDLBlkErr{carrierIdx}(ueIdx, :);
+                        obj.PrevCumulativeDLBlkErr{carrierIdx}(ueIdx, :) = ueStats;
+                    end
+                else
+                    obj.UERxStats{carrierIdx} = zeros(numTotalUEs, 2);
+                end
+
+                % Read the UL Rx stats for each UE from gNB on this carrier
+                if obj.LinkDirection ~= "DL"
+                    for posIdx = 1:numUEsCC
+                        ueIdx = connectedUEs(posIdx);
+                        gNBStats = [obj.GNB.PhyEntity(carrierIdx).StatDecodeFailures(posIdx) obj.GNB.PhyEntity(carrierIdx).StatReceivedPackets(posIdx)];
+                        obj.GNBRxStats{carrierIdx}(ueIdx, :) = gNBStats - obj.PrevCumulativeULBlkErr{carrierIdx}(ueIdx, :);
+                        obj.PrevCumulativeULBlkErr{carrierIdx}(ueIdx, :) = gNBStats;
+                    end
+                else
+                    obj.GNBRxStats{carrierIdx} = zeros(numTotalUEs, 2);
+                end
+
+                % Log the UL and DL reception stats for this carrier
+                logRxStats(obj, obj.LogIndexCounter, obj.UERxStats{carrierIdx}, obj.GNBRxStats{carrierIdx}, carrierIdx)
+            end
         end
 
-        function logRxStats(obj, symbolNumSimulation, ueRxStats, gNBRxStats)
+        function logRxStats(obj, symbolNumSimulation, ueRxStats, gNBRxStats, carrierIdx)
             %logRxStats Log the reception statistics
             %
-            % logRxStats(OBJ, SYMBOLNUMSIMULATION, UERXSTATS, GNBRXSTATS) Logs the reception
-            % statistics
+            % logRxStats(OBJ, SYMBOLNUMSIMULATION, UERXSTATS, GNBRXSTATS, CARRIERIDX)
+            % Logs the reception statistics for the specified carrier
             %
             % SYMBOLNUMSIMULATION - Symbol number in the simulation
             %
@@ -298,6 +415,8 @@ classdef helperNRPhyLogger < handle
             % GNBRXSTATS - Represents a N-by-2 array, where N is the number of UEs. First
             % and second columns of the array contains the number of erroneous packets
             % received and the total number of received packets from each UE
+            %
+            % CARRIERIDX - Index of the carrier (1 to NumCarriers)
 
             columnMap = obj.ColumnIndexMap;
             % Calculate symbol number in slot (0-13), slot number in frame
@@ -311,36 +430,44 @@ classdef helperNRPhyLogger < handle
 
             logIndex = (obj.CurrFrame * obj.NumSlotsFrame * obj.NumSym) +  ...
                 (obj.CurrSlot * obj.NumSym) + obj.CurrSymbol + 1;
-            obj.RxStatsLog{logIndex, columnMap('Timestamp')} = timestamp;
-            obj.RxStatsLog{logIndex, columnMap('Frame')} = obj.CurrFrame;
-            obj.RxStatsLog{logIndex, columnMap('Slot')} = obj.CurrSlot;
-            obj.RxStatsLog{logIndex, columnMap('Symbol')} = obj.CurrSymbol;
+            obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Timestamp (ms)')} = timestamp;
+            obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Frame')} = obj.CurrFrame;
+            obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Slot')} = obj.CurrSlot;
+            obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Symbol')} = obj.CurrSymbol;
+
+            % Map input to RNTI positions if input is carrier-sized
+            connectedUEs = obj.UERNTIsPerCarrier{carrierIdx};
+            numTotalUEs = numel(obj.UEs);
+            if size(ueRxStats, 1) == obj.NumUEsPerCarrier(carrierIdx) && obj.NumUEsPerCarrier(carrierIdx) ~= numTotalUEs
+                dlVec = zeros(numTotalUEs, 2);
+                dlVec(connectedUEs, :) = ueRxStats;
+                ulVec = zeros(numTotalUEs, 2);
+                ulVec(connectedUEs, :) = gNBRxStats;
+            else
+                dlVec = ueRxStats;
+                ulVec = gNBRxStats;
+            end
 
             % Log DL stats only if configured
             if obj.LinkDirection ~= "UL"
-                % Number of erroneous packets in downlink
-                obj.RxStatsLog{logIndex, columnMap('Number of Decode Failures(DL)')} = ueRxStats(:, 1);
-                % Number of packets in downlink
-                obj.RxStatsLog{logIndex, columnMap('Number of Packets(DL)')} = ueRxStats(:, 2);
+                obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Number of Decode Failures(DL)')} = dlVec(:, 1);
+                obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Number of Packets(DL)')} = dlVec(:, 2);
             end
             % Log UL stats only if configured
             if obj.LinkDirection ~= "DL"
-                % Number of erroneous packets in uplink
-                obj.RxStatsLog{logIndex, columnMap('Number of Decode Failures(UL)')} = gNBRxStats(:, 1);
-                % Number of packets in uplink
-                obj.RxStatsLog{logIndex, columnMap('Number of Packets(UL)')} = gNBRxStats(:, 2);
+                obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Number of Decode Failures(UL)')} = ulVec(:, 1);
+                obj.RxStatsLog{carrierIdx}{logIndex, columnMap('Number of Packets(UL)')} = ulVec(:, 2);
             end
         end
     end
 
     methods(Access = private)
-        function logFormat = constructLogFormat(obj, numFramesSim)
-            %constructLogFormat Construct log format
+        function logFormat = constructLogFormat(obj, numFramesSim, numUEsCarrier)
+            %constructLogFormat Construct log format for a carrier
 
             columnIndex = 1;
-
             logFormat{1, columnIndex} = 0; % Timestamp (in milliseconds)
-            obj.ColumnIndexMap('Timestamp') = columnIndex;
+            obj.ColumnIndexMap('Timestamp (ms)') = columnIndex;
 
             columnIndex = columnIndex + 1;
             logFormat{1, columnIndex} = 0; % Frame number
@@ -357,27 +484,27 @@ classdef helperNRPhyLogger < handle
             % Only add DL columns if needed
             if obj.LinkDirection ~= "UL"
                 columnIndex = columnIndex + 1;
-                logFormat{1, columnIndex} = zeros(obj.NumUEs, 1); % Number of erroneous packets in the downlink direction
+                logFormat{1, columnIndex} = zeros(numUEsCarrier, 1);
                 obj.ColumnIndexMap('Number of Decode Failures(DL)') = columnIndex;
 
                 columnIndex = columnIndex + 1;
-                logFormat{1, columnIndex} = zeros(obj.NumUEs, 1); % Number of packets in the downlink direction
+                logFormat{1, columnIndex} = zeros(numUEsCarrier, 1);
                 obj.ColumnIndexMap('Number of Packets(DL)') = columnIndex;
             end
 
             % Only add UL columns if needed
             if obj.LinkDirection ~= "DL"
                 columnIndex = columnIndex + 1;
-                logFormat{1, columnIndex} = zeros(obj.NumUEs, 1); % Number of erroneous packets in the uplink direction
+                logFormat{1, columnIndex} = zeros(numUEsCarrier, 1);
                 obj.ColumnIndexMap('Number of Decode Failures(UL)') = columnIndex;
 
                 columnIndex = columnIndex + 1;
-                logFormat{1, columnIndex} = zeros(obj.NumUEs, 1); % Number of packets in the uplink direction
+                logFormat{1, columnIndex} = zeros(numUEsCarrier, 1);
                 obj.ColumnIndexMap('Number of Packets(UL)') = columnIndex;
             end
 
             % Initialize Rx stats logs for all the symbols in the simulation time
-            numSlotsSim = numFramesSim * obj.NumSlotsFrame; % Simulation time in units of slot duration
+            numSlotsSim = round(numFramesSim * obj.NumSlotsFrame); % Simulation time in units of slot duration
             logFormat = repmat(logFormat(1,:), numSlotsSim*obj.NumSym, 1);
         end
     end

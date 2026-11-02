@@ -1,26 +1,57 @@
 classdef helperNRSchedulingLogger < handle
     %helperNRSchedulingLogger Scheduler logging mechanism
-    %   The class implements logging mechanism. The following types of
-    %   information is logged:
+    %   The class implements per-carrier logging mechanism. The following types
+    %   of information is logged:
     %   - Logs of CQI values for UEs over the bandwidth
     %   - Logs of resource grid assignment to UEs
     %
+    %   All log vectors are RNTI-indexed: position i stores the metric for the
+    %   UE with RNTI i, regardless of which carrier it is connected to. This
+    %   ensures all carriers use same-length vectors, simplifying cross-carrier
+    %   queries.
+    %
     %   helperNRSchedulingLogger Name-Value pairs:
     %
-    %   LinkDirection     - Indicate the link direction in which logging is performed
+    %   LinkDirection     - Indicate the link direction in which logging is
+    %                       performed. Takes values "DL", "UL", or "Both"
+    %                       (default: "Both").
+    %
+    %   CarrierID        - Scalar or vector of carrier indices to log. If
+    %                      specified, logging and queries operate only on these
+    %                      carriers. Default is 1 (primary carrier).
 
     %   Copyright 2022-2026 The MathWorks, Inc.
 
     properties
-        %NCellID Cell ID to which the logging and visualization object belongs
-        NCellID (1, 1) {mustBeInteger, mustBeBetween(NCellID, 0, 1007)} = 1;
+        %LinkDirection Indicates the directions in which logging is performed
+        % It takes values "DL","UL" and "Both". By default, the value is set to
+        % "Both", indicating that logs are recorded for both directions.
+        LinkDirection (1,1) string {mustBeMember(LinkDirection, ["DL", "UL", "Both"])} = "Both";
 
-        %NumUEs Count of UEs
-        NumUEs = 0
+        %CarrierID Indicates index of the carrier(s) to log.
+        % Scalar or vector specifying a subset of gNB carrier indices. Default is 1
+        % (gNB first carrier).
+        CarrierID (1,:) {mustBeInteger, mustBePositive} = 1;
+    end
+
+    properties
+        %NumUEsPerCarrier Number of UEs on each carrier
+        % It is a 1-by-NumCarriers row vector. Element at ith position gives the
+        % number of UEs connected on gNB ith carrier.
+        NumUEsPerCarrier
+
+        %UERNTIsPerCarrier RNTIs of UEs served on each carrier
+        % It is a 1-by-NumCarriers cell array. Each element is a row vector of UE
+        % RNTIs served on that carrier.
+        UERNTIsPerCarrier
+
+        %NumCarriers Number of component carriers configured at the gNB
+        NumCarriers
 
         %NumHARQ Number of HARQ processes
-        % The default value is 16 HARQ processes
-        NumHARQ (1, 1) {mustBeInteger, mustBeBetween(NumHARQ, 1, 16)} = 16;
+        % The default value is 16 HARQ processes. For 5G Terrestrial Networks (TN),
+        % the maximum is 16; for 5G Non-Terrestrial Networks (NTN), it is 32.
+        NumHARQ (1, 1) {mustBeInteger, mustBeBetween(NumHARQ, 1, 32)} = 16;
 
         %NumFrames Number of frames in simulation
         NumFrames
@@ -39,22 +70,24 @@ classdef helperNRSchedulingLogger < handle
         % Value 0 means RAT-0 and value 1 means RAT-1. The default value is 1
         ResourceAllocationType (1, 1) {mustBeInteger, mustBeBetween(ResourceAllocationType, 0, 1)} = 1;
 
-        %ColumnIndexMap Mapping the column names of logs to respective column indices
+        %ColumnIndexMap Mapping the column names of scheduling logs to respective column indices
         % It is a map object
         ColumnIndexMap
 
-        %GrantColumnIndexMap Mapping the column names of scheduling logs to respective column indices
+        %GrantLogsColumnIndexMap Mapping the column names of grant logs to respective column indices
         % It is a map object
         GrantLogsColumnIndexMap
 
-        %NumRBs Number of resource blocks
+        %NumRBs Number of resource blocks per component carrier
         % A vector of two elements and represents the number of PDSCH and
         % PUSCH RBs respectively
         NumRBs = zeros(2, 1);
 
-        %Bandwidth Carrier bandwidth
-        % A vector of two elements and represents the downlink and uplink
-        % bandwidth respectively
+        %Bandwidth Total aggregated bandwidth across all component carriers
+        % A vector of two elements. First and second elements represent the
+        % total downlink and uplink bandwidth respectively. For single-carrier
+        % operation, this equals the single carrier bandwidth. For CA, this is
+        % the sum of bandwidths across all configured component carriers.
         Bandwidth
 
         %RBGSizeConfig Type of RBG table to use
@@ -65,14 +98,15 @@ classdef helperNRSchedulingLogger < handle
         RBGSizeConfig = 1;
 
         %SchedulingLog Symbol-by-symbol log of the simulation
-        % In FDD mode first element contains downlink scheduling
-        % information and second element contains uplink scheduling
-        % information. In TDD mode first element contains scheduling
-        % information of both downlink and uplink
-        SchedulingLog = cell(2, 1);
+        % It is a NumCarriers-by-2 cell array. Each row corresponds to a carrier
+        % index. In FDD mode first element contains downlink scheduling information
+        % and second element contains uplink scheduling information. In TDD mode
+        % first element contains scheduling information of both downlink and uplink
+        SchedulingLog
 
         %GrantLog Log of the scheduling grants
-        % It also contains the parameters for scheduling decisions
+        % It is a 1-by-NumCarriers cell array. Each element contains the grant log
+        % for that carrier.
         GrantLog
 
         %IsLogReplay Flag to decide the type of post-simulation visualization
@@ -85,24 +119,29 @@ classdef helperNRSchedulingLogger < handle
         % assigned in the chosen frame (or slot)
         IsLogReplay
 
-        %PeakDataRateDL Theoretical peak data rate in the downlink direction
+        %PeakDataRateDL Aggregate theoretical peak data rate in the downlink direction (Mbps)
+        % For CA, this is the sum of per-carrier DL peak data rates,
+        % accounting for each carrier's NRB, SCS, and TDD configuration.
         PeakDataRateDL
 
-        %PeakDataRateUL Theoretical peak data rate in the uplink direction
+        %PeakDataRateUL Aggregate theoretical peak data rate in the uplink direction (Mbps)
+        % For CA, this is the sum of per-carrier UL peak data rates,
+        % accounting for each carrier's NRB, SCS, and TDD configuration.
         PeakDataRateUL
 
         %TraceIndexCounter Current log index
         TraceIndexCounter = 0;
-
-        % LinkDirection indicates the directions in which logging is performed. It
-        % takes values "DL","UL" and "Both". By default, the value is set to
-        % "Both", indicating that logs are recorded for both directions.
-        LinkDirection = "Both";
     end
 
     properties (SetAccess = private)
-        % UEIdList RNTIs of UEs in a cell as row vector
-        UEIdList
+        %UECarrierIndexMap Mapping from gNB carrier index to UE carrier index
+        % It is a 1-by-NumCarriers cell array. Each element is a vector of
+        % length NumUEsPerCarrier(c) containing the UE-local component carrier
+        % index for each UE on that gNB carrier.
+        UECarrierIndexMap
+
+        % Enable NTN-specific logging adaptations (extended HARQ, timing advance)
+        IsNTNSimulation = false;
     end
 
     properties (WeakHandle, SetAccess=private)
@@ -150,11 +189,14 @@ classdef helperNRSchedulingLogger < handle
         % constants are used for indexing logs and identifying plots
         %DownlinkIdx Index for all downlink information
         DownlinkIdx = 1;
-        %UplinkIdx Index for all downlink information
+        %UplinkIdx Index for all uplink information
         UplinkIdx = 2;
     end
 
     properties (Access = private)
+        %FreqAllocLabel Column name for frequency allocation, set based on resource allocation type
+        FreqAllocLabel
+
         %NumSlotsFrame Number of slots in 10ms time frame
         NumSlotsFrame
 
@@ -180,7 +222,7 @@ classdef helperNRSchedulingLogger < handle
         PlotIds
 
         %GrantCount Keeps track of count of grants sent
-        GrantCount = 0
+        GrantCount
 
         %RBGSize Number of RBs in an RBG. First element represents RBG
         % size for PDSCHRBs and second element represents RBG size for
@@ -197,60 +239,66 @@ classdef helperNRSchedulingLogger < handle
         StepSize
 
         %UEMetricsUL UE metrics for each slot in the UL direction
-        % It is an array of size N-by-2 where N is the number of UEs in
-        % each cell. Each column of the array contains the following
-        % metrics: Transmitted bytes and pending buffer amount bytes.
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 where N is
+        % the number of UEs. Each column contains the following metrics:
+        % Transmitted bytes and pending buffer amount bytes.
         UEMetricsUL
 
         %UEMetricsDL UE metrics for each slot in the DL direction
-        % It is an array of size N-by-2 where N is the number of UEs in
-        % each cell. Each column of the array contains the following
-        % metrics: Transmitted bytes, and pending buffer amount bytes.
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 array
+        % where N is the total number of UEs connected with the gNB's first
+        % carrier. Each column contains the following metrics: Transmitted bytes,
+        % and pending buffer amount bytes.
         UEMetricsDL
 
         %PrevUEMetricsUL UE metrics returned in the UL direction for previous query
-        % It is an array of size N-by-2 where N is the number of UEs in
-        % each cell. Each column of the array contains the following
-        % metrics: Transmitted bytes transmitted, and pending buffer amount
-        % bytes.
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 array
+        % where N is the total number of UEs connected with the gNB's first
+        % carrier. Each column contains the following metrics: Transmitted bytes
+        % transmitted, and pending buffer amount bytes.
         PrevUEMetricsUL
 
         %PrevUEMetricsDL UE metrics returned in the DL direction for previous query
-        % It is an array of size N-by-2 where N is the number of UEs in
-        % each cell. Each column of the array contains the following
-        % metrics: Transmitted bytes, and pending buffer amount bytes.
+        % It is a 1-by-NumCarriers cell array. Each element is an N-by-2 array
+        % where N is the total number of UEs connected with the gNB's first
+        % carrier. Each column contains the following metrics: Transmitted bytes
+        % transmitted, and pending buffer amount bytes.
         PrevUEMetricsDL
 
         %UplinkChannelQuality Current channel quality for the UEs in uplink
-        % It is an array of size M-by-N where M and N represents the number
-        % of UEs in each cell and the number of RBs respectively.
+        % It is a 1-by-NumCarriers cell array. Each element is an array of size
+        % M-by-N where M and N represents the number of UEs in each cell and the
+        % number of RBs respectively.
         UplinkChannelQuality
 
         %DownlinkChannelQuality Current channel quality for the UEs in downlink
-        % It is an array of size M-by-N where M and N represents the number
-        % of UEs in each cell and the number of RBs respectively.
+        % It is a 1-by-NumCarriers cell array. Each element is an array of size
+        % M-by-N where M and N represents the number of UEs in each cell and the
+        % number of RBs respectively.
         DownlinkChannelQuality
 
         %HARQProcessStatusUL HARQ process status for each UE in UL
-        % It is an array of size M-by-N where M and N represents the number
-        % of UEs and number of HARQ processes for each UE respectively. Each
-        % element stores the last received new data indicator (NDI) values
-        % in the uplink
+        % It is a 1-by-NumCarriers cell array. Each element is an array of size
+        % M-by-N where M and N represents the number of UEs and number of HARQ
+        % processes for each UE respectively. Each element stores the last received
+        % new data indicator (NDI) values in the uplink.
         HARQProcessStatusUL
 
         %HARQProcessStatusDL HARQ process status for each UE in DL
-        % It is an array of size M-by-N where M and N represents the number
-        % of UEs and number of HARQ processes for each UE respectively. Each
-        % element stores the last received new data indicator (NDI) values
-        % in the downlink
+        % It is a 1-by-NumCarriers cell array. Each element is an array of size
+        % M-by-N where M and N represents the number of UEs and number of HARQ
+        % processes for each UE respectively. Each element stores the last received
+        % new data indicator (NDI) values in the downlink
         HARQProcessStatusDL
 
         %PeakDLSpectralEfficiency Theoretical peak spectral efficiency in
-        % the downlink direction
+        % the downlink direction (bits/s/Hz). Computed as aggregate peak DL
+        % data rate divided by total aggregated DL bandwidth.
         PeakDLSpectralEfficiency
 
         %PeakULSpectralEfficiency Theoretical peak spectral efficiency in
-        % the uplink direction
+        % the uplink direction (bits/s/Hz). Computed as aggregate peak UL
+        % data rate divided by total aggregated UL bandwidth.
         PeakULSpectralEfficiency
 
         %LogGranularity Granularity of logs
@@ -266,10 +314,6 @@ classdef helperNRSchedulingLogger < handle
         %    CallBackFn - Call back to invoke when triggering the event
         %    TimeToInvoke - Time at which event has to be invoked
         Events = [];
-
-        %CarrierOfInterest Carrier index (w.r.t to the gNB) corresponding to which the
-        %scheduler logs will be shown
-        CarrierOfInterest = 1;
 
         %NumDLULPatternSlots Number of slots in DL-UL pattern (for TDD mode)
         NumDLULPatternSlots
@@ -296,6 +340,11 @@ classdef helperNRSchedulingLogger < handle
             % the same GNB.
             %
             % LINKDIRECTION indicates the link directions in which logging is performed.
+            %
+            % CarrierID    - Index of the carrier(s) to log. If specified, logging is
+            %                performed only for the given carrier(s). Default is 1 (gNB
+            %                first carrier). This is according to the order of carriers
+            %                at the gNB.
 
             % Initialize the properties
             for idx = 1:2:numel(varargin)
@@ -312,15 +361,55 @@ classdef helperNRSchedulingLogger < handle
             if isempty(UEs) % No UEs in the cell
                 return;
             end
-            obj.UEs = UEs;
+
+            % Identify whether it is TN gNB or NTN gNB
+            obj.IsNTNSimulation = isprop(gNB, 'FeederLinkCarrierFrequency');
+
+            % Sort UEs by RNTI so that obj.UEs(rnti) is always correct
+            [~, sortOrder] = sort([UEs.RNTI]);
+            obj.UEs = UEs(sortOrder);
+            numTotalUEs = numel(UEs);
             obj.NumSlotsFrame = (10 * gNB.SubcarrierSpacing) / 15e3; % Number of slots in a 10 ms frame
             slotDuration = (10/obj.NumSlotsFrame)*1e-3;
             % Symbol duration for the given numerology
             symbolDuration = 1e-3/(14*(gNB.SubcarrierSpacing/15e3)); % Assuming normal cyclic prefix
 
-            obj.NCellID = gNB.NCellID(1);
-            obj.NumUEs = numel(obj.UEs);
-            obj.UEIdList = 1:obj.NumUEs;
+            obj.NumCarriers = numel(gNB.ComponentCarrierConfig);
+
+            % Determine which UEs are connected to each carrier
+            obj.UERNTIsPerCarrier = cell(1, obj.NumCarriers);
+            if isprop(gNB, 'UEInfoPerCarrier')
+                for carrierIdx = 1:obj.NumCarriers
+                    obj.UERNTIsPerCarrier{carrierIdx} = gNB.UEInfoPerCarrier(carrierIdx).UERNTIs;
+                end
+            else
+                % Backward compatible: single carrier uses all the connected UEs
+                obj.UERNTIsPerCarrier{1} = 1:numTotalUEs;
+            end
+            obj.NumUEsPerCarrier = zeros(1, obj.NumCarriers);
+            for carrierIdx = 1:obj.NumCarriers
+                obj.NumUEsPerCarrier(carrierIdx) = numel(obj.UERNTIsPerCarrier{carrierIdx});
+            end
+
+            % Build UE carrier index map by matching gNB DL carrier
+            % frequency against each UE's ReceiveFrequency
+            obj.UECarrierIndexMap = cell(1, obj.NumCarriers);
+            if obj.IsNTNSimulation
+                gNBDLFreq = gNB.ServiceLinkCarrierFrequency(1);
+            else
+                gNBDLFreq = gNB.DLCarrierFrequency;
+            end
+            for carrierIdx = 1:obj.NumCarriers
+                connectedUEs = obj.UERNTIsPerCarrier{carrierIdx};
+                numUEsCC = obj.NumUEsPerCarrier(carrierIdx);
+                uePhyIdx = zeros(1, numUEsCC);
+                for posIdx = 1:numUEsCC
+                    ueIdx = connectedUEs(posIdx);
+                    [~, uePhyIdx(posIdx)] = ismember(gNBDLFreq(carrierIdx), obj.UEs(ueIdx).ReceiveFrequency);
+                end
+                obj.UECarrierIndexMap{carrierIdx} = uePhyIdx;
+            end
+
             obj.NumHARQ = gNB.NumHARQ;
             schedulerConfig = gNB.MACEntity.Scheduler.SchedulerConfig;
             obj.SchedulingType = schedulerConfig.SchedulingType;
@@ -328,12 +417,17 @@ classdef helperNRSchedulingLogger < handle
             obj.GrantLogsColumnIndexMap = containers.Map('KeyType','char','ValueType','double');
 
             % Maximum number of transmission layers for each UE in DL
-            numLayersDL = min(gNB.NumTransmitAntennas*ones(numel(obj.NumUEs), 1),[UEs.NumReceiveAntennas]');
+            numLayersDL = min(gNB.NumTransmitAntennas*ones(numTotalUEs, 1),[UEs.NumReceiveAntennas]');
             % Maximum number of transmission layers for each UE in UL
-            numLayersUL = min(gNB.NumReceiveAntennas*ones(numel(obj.NumUEs), 1), [UEs.NumTransmitAntennas]');
+            numLayersUL = min(gNB.NumReceiveAntennas*ones(numTotalUEs, 1), [UEs.NumTransmitAntennas]');
 
             % Set resource allocation type
             obj.ResourceAllocationType = schedulerConfig.ResourceAllocationType;
+            if obj.ResourceAllocationType % RAT-1
+                obj.FreqAllocLabel = 'Frequency Allocation (RBs)';
+            else % RAT-0
+                obj.FreqAllocLabel = 'Frequency Allocation (RBGs)';
+            end
 
             % Verify Duplex mode and update the properties
             if strcmpi(gNB.DuplexMode, "TDD")
@@ -346,19 +440,6 @@ classdef helperNRSchedulingLogger < handle
             if strcmpi(gNB.DuplexMode, "TDD") % TDD
                 obj.NumLogs = 1;
                 dlulConfig = gNB.DLULConfigTDD;
-                % Number of DL symbols in one DL-UL pattern
-                numDLSymbols = dlulConfig.NumDLSlots*14 + dlulConfig.NumDLSymbols;
-                % Number of UL symbols in one DL-UL pattern
-                numULSymbols = dlulConfig.NumULSlots*14 + dlulConfig.NumULSymbols;
-                % Number of symbols in one DL-UL pattern
-                numSymbols = dlulConfig.DLULPeriodicity*(gNB.SubcarrierSpacing/15e3)*14;
-                % Normalized scalar considering the downlink symbol
-                % allocation in the frame structure
-                scaleFactorDL = numDLSymbols/numSymbols;
-                % Normalized scalar considering the uplink symbol allocation
-                % in the frame structure
-                scaleFactorUL = numULSymbols/numSymbols;
-
                 % Add 'NumDLULPatternSlots' and 'HasSpecialSlot' for optimization. To be used while updating the 'Signal Type'
                 obj.NumDLULPatternSlots = dlulConfig.DLULPeriodicity*(gNB.SubcarrierSpacing/15e3);
                 % Check if special slot is configured
@@ -366,50 +447,107 @@ classdef helperNRSchedulingLogger < handle
                 obj.HasSpecialSlot = totalSymbols > 0;
             else % FDD
                 obj.NumLogs = 2;
-                % Normalized scalars in the DL and UL directions are 1 for
-                % FDD mode
-                scaleFactorDL = 1;
-                scaleFactorUL = 1;
             end
 
-            obj.UEMetricsUL = zeros(obj.NumUEs, 2);
-            obj.UEMetricsDL = zeros(obj.NumUEs, 2);
-            obj.PrevUEMetricsUL = zeros(obj.NumUEs, 2);
-            obj.PrevUEMetricsDL = zeros(obj.NumUEs, 2);
+            % Initialize per-carrier metrics arrays.
+            % Each element stores current/previous UE metrics, channel
+            % quality, and HARQ NDI status.
+            obj.UEMetricsUL = cell(1, obj.NumCarriers);
+            obj.UEMetricsDL = cell(1, obj.NumCarriers);
+            obj.PrevUEMetricsUL = cell(1, obj.NumCarriers);
+            obj.PrevUEMetricsDL = cell(1, obj.NumCarriers);
+            % Store current UL and DL CQI values on the RBs for the UEs
+            obj.UplinkChannelQuality = cell(1, obj.NumCarriers);
+            obj.DownlinkChannelQuality = cell(1, obj.NumCarriers);
+            % Store the last received new data indicator (NDI) values for
+            % UL and DL HARQ processes
+            obj.HARQProcessStatusUL = cell(1, obj.NumCarriers);
+            obj.HARQProcessStatusDL = cell(1, obj.NumCarriers);
+            for carrierIdx = 1:obj.NumCarriers
+                obj.UEMetricsUL{carrierIdx} = zeros(numTotalUEs, 2);
+                obj.UEMetricsDL{carrierIdx} = zeros(numTotalUEs, 2);
+                obj.PrevUEMetricsUL{carrierIdx} = zeros(numTotalUEs, 2);
+                obj.PrevUEMetricsDL{carrierIdx} = zeros(numTotalUEs, 2);
+                obj.UplinkChannelQuality{carrierIdx} = cell(numTotalUEs, 1);
+                obj.DownlinkChannelQuality{carrierIdx} = cell(numTotalUEs, 1);
+                obj.HARQProcessStatusUL{carrierIdx} = zeros(numTotalUEs, obj.NumHARQ);
+                obj.HARQProcessStatusDL{carrierIdx} = zeros(numTotalUEs, obj.NumHARQ);
+            end
 
-            % Store current UL and DL CQI values on the RBs for the UEs.
-            obj.UplinkChannelQuality = cell(obj.NumUEs, 1);
-            obj.DownlinkChannelQuality = cell(obj.NumUEs, 1);
+            % Compute aggregate bandwidth across all component carriers
+            if obj.NumCarriers > 1
+                obj.Bandwidth = [sum([gNB.ComponentCarrierConfig.ChannelBandwidth]) ...
+                                 sum([gNB.ComponentCarrierConfig.ChannelBandwidth])];
+            else
+                obj.Bandwidth = [gNB.ChannelBandwidth gNB.ChannelBandwidth];
+            end
 
-            % Store the last received new data indicator (NDI) values for UL and DL HARQ
-            % processes.
-            obj.HARQProcessStatusUL = zeros(obj.NumUEs, obj.NumHARQ);
-            obj.HARQProcessStatusDL = zeros(obj.NumUEs, obj.NumHARQ);
-            obj.Bandwidth = [gNB.ChannelBandwidth gNB.ChannelBandwidth];
+            % Calculate aggregate peak data rates as per 3GPP TR 37.910. For CA, peak
+            % rate is computed per carrier (each with its own NRB, SCS, and TDD config)
+            % and summed. The number of layers used for the peak DL data rate
+            % calculation is taken as the average of maximum layers possible for each
+            % UE. The maximum layers possible for each UE is min(gNBTxAnts, ueRxAnts)
+            avgNumLayersDL = sum(numLayersDL) / numTotalUEs;
+            avgNumLayersUL = sum(numLayersUL) / numTotalUEs;
+            aggPeakDL = 0;
+            aggPeakUL = 0;
+            % Assume same SCS and duplex mode for all the carriers
+            scs = gNB.ComponentCarrierConfig(1).SubcarrierSpacing/1e3;
+            duplexMode = gNB.ComponentCarrierConfig(1).DuplexMode;
+            for ccIdx = 1:obj.NumCarriers
+                if obj.NumCarriers > 1
+                    ccConfig = gNB.ComponentCarrierConfig(ccIdx);
+                    ccNRB = ccConfig.NumResourceBlocks;
+                else
+                    ccNRB = gNB.NumResourceBlocks;
+                end
+                % Determine DL/UL scale factors based on duplex mode
+                if strcmp(duplexMode, "TDD")
+                    if obj.NumCarriers > 1
+                        dlulConfig = ccConfig.DLULConfigTDD;
+                    else
+                        dlulConfig = gNB.DLULConfigTDD;
+                    end
+                    % Number of DL symbols in one DL-UL pattern
+                    ccNumDLSymbols = dlulConfig.NumDLSlots*14 + dlulConfig.NumDLSymbols;
+                    % Number of UL symbols in one DL-UL pattern
+                    ccNumULSymbols = dlulConfig.NumULSlots*14 + dlulConfig.NumULSymbols;
+                    % Number of symbols in one DL-UL pattern
+                    ccNumSymbols = dlulConfig.DLULPeriodicity*(gNB.SubcarrierSpacing/15e3)*14;
+                    % Normalized scalar considering the downlink symbol allocation in the frame
+                    % structure
+                    ccScaleFactorDL = ccNumDLSymbols/ccNumSymbols;
+                    % Normalized scalar considering the uplink symbol allocation in the frame
+                    % structure
+                    ccScaleFactorUL = ccNumULSymbols/ccNumSymbols;
 
-            % Calculate uplink and downlink peak data rates as per 3GPP TS
-            % 37.910. The number of layers used for the peak DL data rate
-            % calculation is taken as the average of maximum layers
-            % possible for each UE. The maximum layers possible for each UE
-            % is min(gNBTxAnts, ueRxAnts)
-            % Determine the plots
+                else % FDD
+                    % Normalized scalars in the DL and UL directions are 1 for FDD mode
+                    ccScaleFactorDL = 1;
+                    ccScaleFactorUL = 1;
+                end
+
+                % Per-carrier peak data rate (Mbps)
+                aggPeakDL = aggPeakDL + 1e-6*avgNumLayersDL*ccScaleFactorDL*8*(948/1024)*(ccNRB*12)/symbolDuration;
+                aggPeakUL = aggPeakUL + 1e-6*avgNumLayersUL*ccScaleFactorUL*8*(948/1024)*(ccNRB*12)/symbolDuration;
+            end
+
+            % Determine the plots and assign aggregate peak rates
             if obj.LinkDirection == "Both"
-                % Downlink & Uplink
                 obj.PlotIds = [obj.DownlinkIdx obj.UplinkIdx];
-                % Average of the peak DL transmitted values for each UE
-                obj.PeakDataRateDL = 1e-6*(sum(numLayersDL)/obj.NumUEs)*scaleFactorDL*8*(948/1024)*(obj.GNB.NumResourceBlocks*12)/symbolDuration;
-                obj.PeakDataRateUL = 1e-6*(sum(numLayersUL)/obj.NumUEs)*scaleFactorUL*8*(948/1024)*(obj.GNB.NumResourceBlocks*12)/symbolDuration;
+                obj.PeakDataRateDL = aggPeakDL;
+                obj.PeakDataRateUL = aggPeakUL;
                 % Calculate uplink and downlink peak spectral efficiency
                 obj.PeakDLSpectralEfficiency = 1e6*obj.PeakDataRateDL/obj.Bandwidth(obj.DownlinkIdx);
                 obj.PeakULSpectralEfficiency = 1e6*obj.PeakDataRateUL/obj.Bandwidth(obj.UplinkIdx);
             elseif obj.LinkDirection == "DL" % Downlink
                 obj.PlotIds = obj.DownlinkIdx;
-                obj.PeakDataRateDL = 1e-6*(sum(numLayersDL)/obj.NumUEs)*scaleFactorDL*8*(948/1024)*(obj.GNB.NumResourceBlocks*12)/symbolDuration;
+                obj.PeakDataRateDL = aggPeakDL;
                 % Calculate downlink peak spectral efficiency
                 obj.PeakDLSpectralEfficiency = 1e6*obj.PeakDataRateDL/obj.Bandwidth(obj.DownlinkIdx);
             else % Uplink
                 obj.PlotIds = obj.UplinkIdx;
-                obj.PeakDataRateUL = 1e-6*(sum(numLayersUL)/obj.NumUEs)*scaleFactorUL*8*(948/1024)*(obj.GNB.NumResourceBlocks*12)/symbolDuration;
+                obj.PeakDataRateUL = aggPeakUL;
                 % Calculate uplink peak spectral efficiency
                 obj.PeakULSpectralEfficiency = 1e6*obj.PeakDataRateUL/obj.Bandwidth(obj.UplinkIdx);
             end
@@ -427,21 +565,26 @@ classdef helperNRSchedulingLogger < handle
                 end
             end
 
-            % Initialize the scheduling logs and resources grid related
-            % properties
-            for idx=1:min(obj.NumLogs, numel(obj.PlotIds))
-                plotId = obj.PlotIds(idx);
-                if obj.DuplexMode == obj.FDDDuplexMode
-                    logIdx = plotId; % FDD
-                else
-                    logIdx = idx; % TDD
+            % Initialize the scheduling logs per carrier
+            obj.SchedulingLog = cell(obj.NumCarriers, 2);
+            for carrierIdx = 1:obj.NumCarriers
+                for idx=1:min(obj.NumLogs, numel(obj.PlotIds))
+                    plotId = obj.PlotIds(idx);
+                    if obj.DuplexMode == obj.FDDDuplexMode
+                        logIdx = plotId; % FDD
+                    else
+                        logIdx = idx; % TDD
+                    end
+                    obj.SchedulingLog{carrierIdx, logIdx} = constructSchedulingLogFormat(obj, logIdx, numTotalUEs);
                 end
-                % Construct the log format
-                obj.SchedulingLog{logIdx} = constructSchedulingLogFormat(obj, logIdx);
             end
 
-            % Construct the grant log format
-            obj.GrantLog = constructGrantLogFormat(obj);
+            % Construct the grant log format per carrier
+            obj.GrantLog = cell(1, obj.NumCarriers);
+            obj.GrantCount = zeros(1, obj.NumCarriers);
+            for carrierIdx = 1:obj.NumCarriers
+                obj.GrantLog{carrierIdx} = constructGrantLogFormat(obj, numTotalUEs);
+            end
 
             if ~isempty(obj.IsLogReplay) && obj.SchedulingType == obj.SlotBased
                 % Post simulation log visualization and slot based scheduling
@@ -466,23 +609,30 @@ classdef helperNRSchedulingLogger < handle
                     scheduleAction(obj.NetworkSimulator, @obj.logCellSchedulingStats, [], slotDuration/2, slotDuration);
                 end
 
-                % Create a listener object for the 'ScheduledResources' event. This helps
-                % in logging the scheduling output of gNB
-                addlistener(obj.UEs, 'PacketReceptionEnded', @(src, eventData) obj.logPHYMetrics(src, eventData));
-                addlistener(obj.GNB, 'PacketReceptionEnded', @(src, eventData) obj.logPHYMetrics(src, eventData));
+                % Register callbacks for PHY metrics from UE and gNB nodes
+                % DownlinkIdx for UE (DL reception), UplinkIdx for gNB (UL reception)
+                registerEventCallback(obj.UEs, "ReceptionEnded", @(eventStruct) obj.logPHYMetrics(eventStruct, obj.DownlinkIdx));
+                registerEventCallback(obj.GNB, "ReceptionEnded", @(eventStruct) obj.logPHYMetrics(eventStruct, obj.UplinkIdx));
+                % Create a listener object for the 'ScheduledResources' event.
+                % This helps in logging the scheduling output of gNB
                 addlistener(obj.GNB, 'ScheduledResources', @(src, eventData) obj.logSchedulingGrants(src, eventData));
+
+                % Register NTN-specific callback for UE Tx time logging
+                if obj.IsNTNSimulation
+                    registerEventCallback(obj.UEs, "TransmissionStarted", @(eventStruct) obj.logUETxTime(eventStruct));
+                end
             end
         end
 
-        function logPHYMetrics(obj, ~, eventData)
+        function logPHYMetrics(obj, eventStruct, linkIndex)
             %logPHYMetrics Log the SINR and signal type values
             %
-            % logPHYMetrics(OBJ, EVENTSOURCE, EVENTDATA) Logs
+            % logPHYMetrics(OBJ, EVENTSTRUCT, LINKINDEX) Logs
             % the PHY information based on the received event data
             %
-            % EVENTSOURCE - Event source object
+            % EVENTSTRUCT - Event struct from registerEventCallback
             %
-            % EVENTDATA - Event data
+            % LINKINDEX - Integer identifying the link direction
 
             linkDir = obj.PlotIds;
             linkDir = linkDir - 1;
@@ -492,25 +642,53 @@ classdef helperNRSchedulingLogger < handle
 
             if obj.DuplexMode == obj.FDDDuplexMode
                 % FDD Mode
-                if linkDir ~= 1 && isa(eventData.Source, 'nrUE')
-                    % if LinkDirection is for downlink or uplink and downlink
-                    logPHYMetricsData(obj, eventData, obj.DownlinkIdx);
+                if linkDir ~= 1 && linkIndex == obj.DownlinkIdx
+                    % If LinkDirection is for downlink or uplink and downlink
+                    logPHYMetricsData(obj, eventStruct, obj.DownlinkIdx);
                 end
-                if linkDir ~= 0 && isa(eventData.Source, 'nrGNB')
+                if linkDir ~= 0 && linkIndex == obj.UplinkIdx
                     % If LinkDirection is for uplink or uplink and downlink
-                    logPHYMetricsData(obj, eventData, obj.UplinkIdx);
+                    logPHYMetricsData(obj, eventStruct, obj.UplinkIdx);
                 end
-            else % TDD mode
-                logPHYMetricsData(obj, eventData, obj.DownlinkIdx);
+            else % TDD mode: both DL and UL are stored in SchedulingLog{carrierIdx, DownlinkIdx}
+                logPHYMetricsData(obj, eventStruct, linkIndex);
             end
         end
 
-        function logPHYMetricsData(obj, eventData, linkIndex)
+        function logPHYMetricsData(obj, eventStruct, linkIndex)
             %logPHYMetricsData Assign the Scheduling log corresponding to the linkIndex
 
-            data = eventData.Data;
-            currFrame = data.TimingInfo(1);
-            currSlot = data.TimingInfo(2);
+            data = eventStruct.EventData;
+            % Determine which carrier this event belongs to by matching
+            % the event's carrier frequency against gNB frequencies.
+            % DL (linkIndex=1) -> match against DL carrier frequencies
+            % UL (linkIndex=2) -> match against UL carrier frequencies
+            if linkIndex == obj.DownlinkIdx
+                if obj.IsNTNSimulation
+                    carrierIdx = find(obj.GNB.ServiceLinkCarrierFrequency(1) == data.CenterFrequency, 1);
+                else
+                    carrierIdx = find(obj.GNB.DLCarrierFrequency == data.CenterFrequency, 1);
+                end
+            else
+                if obj.IsNTNSimulation
+                    carrierIdx = find(obj.GNB.ServiceLinkCarrierFrequency(2) == data.CenterFrequency, 1);
+                else
+                    carrierIdx = find(obj.GNB.ULCarrierFrequency == data.CenterFrequency, 1);
+                end
+            end
+            if isempty(carrierIdx) || ~ismember(carrierIdx, obj.CarrierID)
+                return;
+            end
+
+            % In TDD mode, both DL and UL are stored in column DownlinkIdx
+            if obj.DuplexMode ~= obj.FDDDuplexMode
+                storageIdx = obj.DownlinkIdx;
+            else
+                storageIdx = linkIndex;
+            end
+
+            currFrame = data.FrameInfo(1);
+            currSlot = data.FrameInfo(2);
             symbolNumSimulation = (currFrame * obj.NumSlotsFrame + currSlot) * obj.NumSym;
             rowIdx = symbolNumSimulation + 1;
             rntiIdx = data.RNTI;
@@ -519,11 +697,11 @@ classdef helperNRSchedulingLogger < handle
 
             if ~isinf(data.SINR)
                 % Log SINR corresponding to the data transmission
-                obj.SchedulingLog{linkIndex}{rowIdx, obj.ColumnIndexMap('SINR')}(rntiIdx) = data.SINR;
+                obj.SchedulingLog{carrierIdx, storageIdx}{rowIdx, obj.ColumnIndexMap('SINR (dB)')}(rntiIdx) = data.SINR;
             end
 
             % Get the current SignalType for the RNTI and symbol
-            currSignalType = obj.SchedulingLog{linkIndex}{rowIdx, sigTypeCol}(rntiIdx);
+            currSignalType = obj.SchedulingLog{carrierIdx, storageIdx}{rowIdx, sigTypeCol}(rntiIdx);
             if currSignalType == ""
                 % If empty, log the new Signal Type
                 signalTypeVal = data.SignalType;
@@ -531,15 +709,65 @@ classdef helperNRSchedulingLogger < handle
                 signalTypeVal = currSignalType + "+" + data.SignalType;
             end
             % Update SchedulingLog
-            obj.SchedulingLog{linkIndex}{rowIdx, sigTypeCol}(rntiIdx) = signalTypeVal;
+            obj.SchedulingLog{carrierIdx, storageIdx}{rowIdx, sigTypeCol}(rntiIdx) = signalTypeVal;
+
+            % Log actual UE reception time for DL in NTN simulations
+            if obj.IsNTNSimulation && linkIndex == obj.DownlinkIdx
+                ueRxTimeMs = eventStruct.Timestamp * 1e3;
+                obj.SchedulingLog{carrierIdx, storageIdx}{rowIdx, obj.ColumnIndexMap('UE Rx Time (ms) (DL only)')}(rntiIdx) = ueRxTimeMs;
+            end
+        end
+
+        function logUETxTime(obj, eventStruct)
+            %logUETxTime Log actual UE transmission time for UL
+            %
+            % logUETxTime(OBJ, EVENTSTRUCT) logs the actual UE transmission
+            % time from the TransmissionStarted event at the target PUSCH
+            % slot row in the UL scheduling log.
+
+            data = eventStruct.EventData;
+
+            % Determine carrier index based on simulation type
+            if obj.IsNTNSimulation
+                carrierIdx = find(obj.GNB.ServiceLinkCarrierFrequency(2) == data.CenterFrequency, 1);
+            else
+                carrierIdx = find(obj.GNB.ULCarrierFrequency == data.CenterFrequency, 1);
+            end
+            if isempty(carrierIdx) || ~ismember(carrierIdx, obj.CarrierID)
+                return;
+            end
+
+            targetFrame = data.FrameInfo(1);
+            targetSlot = data.FrameInfo(2);
+            targetSymbol = data.FrameInfo(3);
+
+            % Actual UE transmission time in ms
+            ueTxTimeMs = eventStruct.Timestamp * 1e3;
+
+            % Determine storage index for UL log
+            if obj.DuplexMode == obj.FDDDuplexMode
+                storageIdx = obj.UplinkIdx;
+            else
+                storageIdx = obj.DownlinkIdx;
+            end
+
+            % Compute row index in the log
+            rowIdx = (targetFrame * obj.NumSlotsFrame + targetSlot) * obj.NumSym + targetSymbol + 1;
+            colIdx = obj.ColumnIndexMap('UE Tx Time (ms) (UL only)');
+            rntiIdx = data.RNTI;
+
+            if rowIdx >= 1 && rowIdx <= size(obj.SchedulingLog{carrierIdx, storageIdx}, 1)
+                obj.SchedulingLog{carrierIdx, storageIdx}{rowIdx, colIdx}(rntiIdx) = ueTxTimeMs;
+            end
         end
 
         function [dlMetrics, ulMetrics, cellMetrics] = getMACMetrics(obj, firstSlot, lastSlot, rntiList)
             %getMACMetrics Returns the MAC metrics
             %
-            % [DLMETRICS, ULMETRICS] = getMACMetrics(OBJ, FIRSTSLOT,
-            % LASTSLOT, RNTILIST) Returns the MAC metrics of the UE with
-            % specified RNTI within the cell for both uplink and downlink direction
+            % [DLMETRICS, ULMETRICS, CELLMETRICS] = getMACMetrics(OBJ, FIRSTSLOT,
+            % LASTSLOT, RNTILIST) Returns the MAC metrics of the UEs with
+            % specified RNTIs within the cell for both uplink and downlink
+            % direction across obj.CarrierID carriers.
             %
             % FIRSTSLOT - Represents the starting slot number for
             % querying the metrics
@@ -548,144 +776,149 @@ classdef helperNRSchedulingLogger < handle
             %
             % RNTILIST - Radio network temporary identifiers of the UEs
             %
-            % ULMETRICS and DLMETRICS are vectors of structures with following properties
-            %
-            %   RNTI - Radio network temporary identifier of the UE
-            %
+            % DLMETRICS and ULMETRICS are struct arrays of size
+            % [numel(rntiList), numel(CarrierID)] with fields:
+            %   RNTI             - Radio network temporary identifier of the UE
             %   TransmittedBytes - Total number of bytes transmitted (newTx and reTx
             %                      combined)
-            %
-            %   BufferStatus - Current buffer status of the UE
-            %
-            %   AssignedRBCount - Number of resource blocks assigned to the UE
-            %
-            %   RBsScheduled - Total number resource blocks scheduled
+            %   BufferStatus     - Current buffer status of the UE
+            %   AssignedRBCount  - Number of resource blocks assigned to the UE
+            %   RBsScheduled     - Total number resource blocks scheduled
             %
             % CELLMETRICS is a structure vector with following properties and contains
             % cell-wide metrics in downlink and uplink respectively
-            %
-            %   DLTransmittedBytes - Total number of bytes transmitted (newTx and
-            %   reTx combined) in downlink
-            %
-            %   DLRBsScheduled - Total number resource blocks scheduled in
-            %   downlink
-            %
-            %   ULTransmittedBytes - Total number of bytes transmitted (newTx and reTx
-            %   combined) in uplink
-            %
-            %   ULRBsScheduled - Total number resource blocks scheduled in uplink
+            %   DLTransmittedBytes - Total DL bytes (summed across carriers)
+            %   DLRBsScheduled     - Total DL RBs scheduled (summed across carriers)
+            %   ULTransmittedBytes - Total UL bytes (summed across carriers)
+            %   ULRBsScheduled     - Total UL RBs scheduled (summed across carriers)
+
+            carrierIndices = obj.CarrierID;
+            numCarriersQuery = numel(carrierIndices);
+            numTotalUEs = numel(obj.UEs);
 
             % Calculate the actual log start and end index
             stepLogStartIdx = (firstSlot-1) * obj.LogInterval + 1;
             stepLogEndIdx = lastSlot*obj.LogInterval;
 
-            % Create structure for both DL and UL
+            % Create structure for both DL and UL per carrier
             outStruct = struct('RNTI', 0, 'TransmittedBytes', 0, 'BufferStatus', 0, ...
                 'AssignedRBCount', 0, 'RBsScheduled', 0);
-            outputStruct = repmat(outStruct, [numel(rntiList) 2]);
-            assignedRBsStep = zeros(obj.NumUEs, 2);
-            macTxStep = zeros(obj.NumUEs, 2);
-            bufferStatus = zeros(obj.NumUEs, 2);
+            outputStruct = repmat(outStruct, [numel(rntiList) 2 numCarriersQuery]);
 
             % Store column index maps in variables and reuse in
             % calculations
             columnIndexMap = obj.ColumnIndexMap;
-            freqAllocation = columnIndexMap('Frequency Allocation');
+            freqAllocation = columnIndexMap(obj.FreqAllocLabel);
             txBytes = columnIndexMap('Transmitted Bytes');
-            bufferStatusUEs = columnIndexMap('Buffer Status of UEs');
+            bufferStatusUEs = columnIndexMap('Buffer Status of UEs (bytes)');
             linktype = columnIndexMap('Tx Type');
 
-            % Update the DL and UL metrics properties
-            for idx = 1:min(obj.NumLogs, numel(obj.PlotIds))
-                plotId = obj.PlotIds(idx);
-                % Determine scheduling log index
-                if obj.DuplexMode == obj.FDDDuplexMode
-                    schedLogIdx = plotId;
-                else
-                    schedLogIdx = 1;
-                end
+            % Cell-wide metrics (summed across queried carriers)
+            cellMetrics.DLTransmittedBytes = 0;
+            cellMetrics.ULTransmittedBytes = 0;
+            cellMetrics.ULRBsScheduled = 0;
+            cellMetrics.DLRBsScheduled = 0;
 
-                numULSyms = 0;
-                numDLSyms = 0;
+            % Update the DL and UL metrics properties for each carrier
+            for cIdx = 1:numCarriersQuery
+                carrierIdx = carrierIndices(cIdx);
+                assignedRBsStep = zeros(numTotalUEs, 2);
+                macTxStep = zeros(numTotalUEs, 2);
+                bufferStatus = zeros(numTotalUEs, 2);
 
-                % Read the information of each slot and update the metrics
-                % properties
-                for i = stepLogStartIdx:obj.StepSize:stepLogEndIdx
-                    slotLog = obj.SchedulingLog{schedLogIdx}(i, :);
-                    frequencyAssignment = slotLog{freqAllocation};
-                    transmittedBytes = slotLog{txBytes};
-                    ueBufferStatus = slotLog{bufferStatusUEs};
-                    if(obj.DuplexMode == obj.TDDDuplexMode)
-                        switch (slotLog{linktype})
-                            case 'UL'
-                                linkIdx = 2; % Uplink information index
-                                numULSyms = numULSyms + 1;
-                            case 'DL'
-                                linkIdx = 1; % Downlink information index
-                                numDLSyms = numDLSyms + 1;
-                            otherwise
-                                continue;
-                        end
+                for idx = 1:min(obj.NumLogs, numel(obj.PlotIds))
+                    plotId = obj.PlotIds(idx);
+                    % Determine scheduling log index
+                    if obj.DuplexMode == obj.FDDDuplexMode
+                        schedLogIdx = plotId;
                     else
-                        linkIdx = plotId;
+                        schedLogIdx = 1;
                     end
 
-                    % Calculate the RBs allocated to an UE based on
-                    % resource allocation type (RAT)
-                    for ueIdx = 1 : obj.NumUEs
-                        if obj.ResourceAllocationType % RAT-1
-                            numRBs = frequencyAssignment(ueIdx, 2);
-                        else % RAT-0
-                            numRBGs = sum(frequencyAssignment(ueIdx, :));
-                            if frequencyAssignment(ueIdx, end) % If RBG is allocated
-                                % If the last RBG of BWP is assigned, then it might not
-                                % have same number of RBs as other RBG.
-                                if(mod(obj.NumRBs(plotId), obj.RBGSize(plotId)) == 0)
-                                    numRBs = numRBGs * obj.RBGSize(plotId);
-                                else
-                                    lastRBGSize = mod(obj.NumRBs(plotId), obj.RBGSize(plotId));
-                                    numRBs = (numRBGs - 1) * obj.RBGSize(plotId) + lastRBGSize;
-                                end
-                            else
-                                numRBs = numRBGs * obj.RBGSize(plotId);
+                    % Read the information of each slot and update the
+                    % metrics properties
+                    for i = stepLogStartIdx:obj.StepSize:stepLogEndIdx
+                        slotLog = obj.SchedulingLog{carrierIdx, schedLogIdx}(i, :);
+                        frequencyAssignment = slotLog{freqAllocation};
+                        transmittedBytes = slotLog{txBytes};
+                        ueBufferStatus = slotLog{bufferStatusUEs};
+                        if(obj.DuplexMode == obj.TDDDuplexMode)
+                            switch (slotLog{linktype})
+                                case 'UL'
+                                    linkIdx = 2; % Uplink information index
+                                case 'DL'
+                                    linkIdx = 1; % Downlink information index
+                                otherwise
+                                    continue;
                             end
+                        else
+                            linkIdx = plotId;
                         end
 
-                        assignedRBsStep(ueIdx, linkIdx) = assignedRBsStep(ueIdx, linkIdx) + numRBs;
-                        macTxStep(ueIdx, linkIdx) = macTxStep(ueIdx, linkIdx) + transmittedBytes(ueIdx);
-                        bufferStatus(ueIdx, linkIdx) = ueBufferStatus(ueIdx);
+                        % Calculate the RBs allocated to a UE based on
+                        % resource allocation type (RAT)
+                        for ueIdx = 1 : numTotalUEs
+                            if obj.ResourceAllocationType % RAT-1
+                                numRBs = frequencyAssignment(ueIdx, 2);
+                            else % RAT-0
+                                numRBGs = sum(frequencyAssignment(ueIdx, :));
+                                if frequencyAssignment(ueIdx, end) % If RBG is allocated
+                                    % If the last RBG of BWP is assigned, then it might not
+                                    % have same number of RBs as other RBG.
+                                    if(mod(obj.NumRBs(plotId), obj.RBGSize(plotId)) == 0)
+                                        numRBs = numRBGs * obj.RBGSize(plotId);
+                                    else
+                                        lastRBGSize = mod(obj.NumRBs(plotId), obj.RBGSize(plotId));
+                                        numRBs = (numRBGs - 1) * obj.RBGSize(plotId) + lastRBGSize;
+                                    end
+                                else
+                                    numRBs = numRBGs * obj.RBGSize(plotId);
+                                end
+                            end
+
+                            assignedRBsStep(ueIdx, linkIdx) = assignedRBsStep(ueIdx, linkIdx) + numRBs;
+                            macTxStep(ueIdx, linkIdx) = macTxStep(ueIdx, linkIdx) + transmittedBytes(ueIdx);
+                            bufferStatus(ueIdx, linkIdx) = ueBufferStatus(ueIdx);
+                        end
                     end
                 end
-            end
 
-            % Extract required metrics of the UEs specified in rntiList
-            for idx = 1:numel(obj.PlotIds)
-                linkIdx = obj.PlotIds(idx);
-                for listIdx = 1:numel(rntiList)
-                    ueIdx = find(rntiList(listIdx) == obj.UEIdList);
-                    outputStruct(listIdx, linkIdx).RNTI = rntiList(listIdx);
-                    outputStruct(listIdx, linkIdx).AssignedRBCount = assignedRBsStep(ueIdx, linkIdx);
-                    outputStruct(listIdx, linkIdx).TransmittedBytes = macTxStep(ueIdx, linkIdx);
-                    outputStruct(listIdx, linkIdx).BufferStatus = bufferStatus(ueIdx, linkIdx);
+                % Extract required metrics of the UEs specified in rntiList
+                for idx = 1:numel(obj.PlotIds)
+                    linkIdx = obj.PlotIds(idx);
+                    for listIdx = 1:numel(rntiList)
+                        ueIdx = rntiList(listIdx);
+                        outputStruct(listIdx, linkIdx, cIdx).RNTI = rntiList(listIdx);
+                        outputStruct(listIdx, linkIdx, cIdx).AssignedRBCount = assignedRBsStep(ueIdx, linkIdx);
+                        outputStruct(listIdx, linkIdx, cIdx).TransmittedBytes = macTxStep(ueIdx, linkIdx);
+                        outputStruct(listIdx, linkIdx, cIdx).BufferStatus = bufferStatus(ueIdx, linkIdx);
+                    end
                 end
+
+                cellMetrics.DLTransmittedBytes = cellMetrics.DLTransmittedBytes + ...
+                    sum([outputStruct(:, obj.DownlinkIdx, cIdx).TransmittedBytes]);
+                cellMetrics.ULTransmittedBytes = cellMetrics.ULTransmittedBytes + ...
+                    sum([outputStruct(:, obj.UplinkIdx, cIdx).TransmittedBytes]);
+                cellMetrics.ULRBsScheduled = cellMetrics.ULRBsScheduled + ...
+                    sum([outputStruct(:, obj.UplinkIdx, cIdx).AssignedRBCount]);
+                cellMetrics.DLRBsScheduled = cellMetrics.DLRBsScheduled + ...
+                    sum([outputStruct(:, obj.DownlinkIdx, cIdx).AssignedRBCount]);
             end
-            dlMetrics = outputStruct(:, obj.DownlinkIdx); % Downlink Info
-            ulMetrics = outputStruct(:, obj.UplinkIdx); % Uplink Info
-            % Cell-wide metrics
-            cellMetrics.DLTransmittedBytes = sum(macTxStep(:, obj.DownlinkIdx));
-            cellMetrics.ULTransmittedBytes = sum(macTxStep(:, obj.UplinkIdx));
-            cellMetrics.ULRBsScheduled = sum(assignedRBsStep(:, obj.UplinkIdx));
-            cellMetrics.DLRBsScheduled = sum(assignedRBsStep(:, obj.DownlinkIdx));
+            dlMetrics = squeeze(outputStruct(:, obj.DownlinkIdx, :));
+            ulMetrics = squeeze(outputStruct(:, obj.UplinkIdx, :));
         end
 
-        function [resourceGridInfo, varargout] = getRBGridsInfo(obj, frameNumber, slotNumber)
+        function [resourceGridInfo, varargout] = getRBGridsInfo(obj, frameNumber, slotNumber, carrierIdx)
             %getRBGridsInfo Return the resource grid information
             %
-            % getRBGridsInfo(OBJ, FRAMENUMBER, SLOTNUMBER) Return the resource grid status
+            % getRBGridsInfo(OBJ, FRAMENUMBER, SLOTNUMBER, CARRIERIDX) Return the
+            % resource grid status for the specified carrier(s)
             %
             % FRAMENUMBER - Frame number
             %
             % SLOTNUMBER - Slot number
+            %
+            % CARRIERIDX - Carrier index (optional, defaults to obj.CarrierID(1))
             %
             % RESOURCEGRIDINFO a 2x1 struct array containing resource grid
             % information for DL and UL. In FDD mode, the first element
@@ -705,6 +938,11 @@ classdef helperNRSchedulingLogger < handle
             %     N: Number of slots (for slot-based scheduling) or symbols
             %     (for symbol-based scheduling)
             %     P: Number of RBs in the bandwidth
+
+            if nargin == 3
+                carrierIdx = obj.CarrierID(1);
+            end
+            numTotalUEs = numel(obj.UEs);
 
             % Initialize struct array
             if obj.SchedulingType % Symbol-based scheduling
@@ -742,18 +980,18 @@ classdef helperNRSchedulingLogger < handle
                 resourceGridInfo(logIdx).UEAssignment = emptyGrid;
                 resourceGridInfo(logIdx).TxType = emptyGrid;
                 resourceGridInfo(logIdx).HarqID = emptyGrid;
-                                
-                % Store column index maps in variables and reuse in
+
+                % Store column index maps in variables and reuse in 
                 % calculations
                 columnIndexMap = obj.ColumnIndexMap;
-                freqAllocation = columnIndexMap('Frequency Allocation');
+                freqAllocation = columnIndexMap(obj.FreqAllocLabel);
                 harqProcess = columnIndexMap('HARQ Process');
                 linkType = columnIndexMap('Tx Type');
 
                 slIdx = 0; % Counter to keep track of the number of symbols/slots to be plotted
                 for i = frameLogStartIdx+1:obj.StepSize:frameLogEndIdx % For each symbol in the slot or each slot in the frame
                     slIdx = slIdx + 1;
-                    slotLog = obj.SchedulingLog{logIdx}(i, :);
+                    slotLog = obj.SchedulingLog{carrierIdx, logIdx}(i, :);
                     
                     frequencyAssignment = slotLog{freqAllocation};
                     harqIds = slotLog{harqProcess};
@@ -762,7 +1000,7 @@ classdef helperNRSchedulingLogger < handle
                     if obj.DuplexMode == obj.TDDDuplexMode
                         symSlotInfo{slIdx} = slotLog{columnIndexMap('Type')};
                     end
-                    for j = 1 : obj.NumUEs % For each UE
+                    for j = 1 : numTotalUEs % For each UE
                         if (strcmp(txType(j), 'newTx') || strcmp(txType(j), 'newTx-Start') || strcmp(txType(j), 'newTx-InProgress') || strcmp(txType(j), 'newTx-End'))
                             type = 1; % New transmission
                         else
@@ -825,19 +1063,26 @@ classdef helperNRSchedulingLogger < handle
             end
         end
 
-        function [dlMCSInfo, ulMCSInfo] = getMCSRBGridsInfo(obj, frameNumber, slotNumber)
-            %getMCSRBGridsInfo Return MCS information
+        function [dlMCSInfo, ulMCSInfo] = getMCSRBGridsInfo(obj, frameNumber, slotNumber, carrierIdx)
+            %getMCSRBGridsInfo Return MCS information for the specified carrier
             %
-            % getMCSRBGridsInfo(OBJ, FRAMENUMBER, SLOTNUMBER) Return
+            % getMCSRBGridsInfo(OBJ, FRAMENUMBER, SLOTNUMBER, CARRIERIDX) Return
             % resource grid MCS information
             %
             % FRAMENUMBER - Frame number
             %
             % SLOTNUMBER - Slot number
             %
+            % CARRIERIDX - Carrier index (optional, defaults to obj.CarrierID(1))
+            %
             % DLMCSINFO - Downlink MCS information
             %
             % ULMCSINFO - Uplink MCS information
+
+            if nargin == 3
+                carrierIdx = obj.CarrierID(1);
+            end
+            numTotalUEs = numel(obj.UEs);
 
             mcsInfo = cell(2, 1);
             lwRowIndex = frameNumber * obj.NumSlotsFrame * obj.LogInterval;
@@ -848,13 +1093,13 @@ classdef helperNRSchedulingLogger < handle
             end
 
             if (obj.DuplexMode == obj.TDDDuplexMode) % TDD
-                if ~isempty(obj.SchedulingLog{obj.DownlinkIdx})
+                if ~isempty(obj.SchedulingLog{carrierIdx, obj.DownlinkIdx})
                     % Get the symbols types in the current frame
-                    symbolTypeInFrame = obj.SchedulingLog{1}(lwRowIndex+1:upRowIndex, obj.ColumnIndexMap('Type'));
+                    symbolTypeInFrame = obj.SchedulingLog{carrierIdx, 1}(lwRowIndex+1:upRowIndex, obj.ColumnIndexMap('Type'));
 
                     % Initialize MCS info
-                    mcsInfo{obj.DownlinkIdx} = -1*ones(obj.NumUEs, obj.NumRBs(obj.DownlinkIdx));
-                    mcsInfo{obj.UplinkIdx} = -1*ones(obj.NumUEs, obj.NumRBs(obj.UplinkIdx));
+                    mcsInfo{obj.DownlinkIdx} = -1*ones(numTotalUEs, obj.NumRBs(obj.DownlinkIdx));
+                    mcsInfo{obj.UplinkIdx} = -1*ones(numTotalUEs, obj.NumRBs(obj.UplinkIdx));
 
                     if obj.SchedulingType % Symbol-based scheduling
                         % Find the last DL and UL symbols in the frame
@@ -862,10 +1107,10 @@ classdef helperNRSchedulingLogger < handle
                         ulIdx = find(strcmp(symbolTypeInFrame, 'UL'), 1, 'last');
                         % Assign MCS for the last DL/UL symbols
                         if ~isempty(dlIdx)
-                            mcsInfo{obj.DownlinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+dlIdx);
+                            mcsInfo{obj.DownlinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+dlIdx, carrierIdx);
                         end
-                        if ~isempty(ulIdx) && ~isempty(obj.SchedulingLog{obj.UplinkIdx})
-                            mcsInfo{obj.UplinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+ulIdx);
+                        if ~isempty(ulIdx)
+                            mcsInfo{obj.UplinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+ulIdx, carrierIdx);
                         end
                     else % Slot-based scheduling
                         % Find first symbols of all slots
@@ -879,19 +1124,19 @@ classdef helperNRSchedulingLogger < handle
                         % Assign MCS from the first symbol of the latest DL/UL slots
                         if ~isempty(dlSlotIdx)
                             dlSymIdx = slotFirstSymIdx(dlSlotIdx);
-                            mcsInfo{obj.DownlinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+dlSymIdx);
+                            mcsInfo{obj.DownlinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+dlSymIdx, carrierIdx);
                         end
                         if ~isempty(ulSlotIdx)
                             ulSymIdx = slotFirstSymIdx(ulSlotIdx);
-                            mcsInfo{obj.UplinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+ulSymIdx);
+                            mcsInfo{obj.UplinkIdx} = assignMCSInfo(obj, obj.DownlinkIdx, lwRowIndex+ulSymIdx, carrierIdx);
                         end
                     end
                 end
             else
                 for idx=1:numel(obj.PlotIds)
                     plotId = obj.PlotIds(idx);
-                    if ~isempty(obj.SchedulingLog{plotId})
-                        mcsInfo{plotId} = assignMCSInfo(obj, plotId, upRowIndex);
+                    if ~isempty(obj.SchedulingLog{carrierIdx, plotId})
+                        mcsInfo{plotId} = assignMCSInfo(obj, plotId, upRowIndex, carrierIdx);
                     end
                 end
             end
@@ -899,16 +1144,20 @@ classdef helperNRSchedulingLogger < handle
             ulMCSInfo = mcsInfo{obj.UplinkIdx};
         end
 
-        function mcsInfo = assignMCSInfo(obj, plotId, upRowIndex)
+        function mcsInfo = assignMCSInfo(obj, plotId, upRowIndex, carrierIdx)
             %assignMCSInfo Assigns MCS values to allocated RBs for a given plotId and upRowIndex
-
+            
+            if nargin == 3
+                carrierIdx = obj.CarrierID(1);
+            end
+            numTotalUEs = numel(obj.UEs);
             numRBs = obj.NumRBs(plotId);
-            mcsInfo = -1 * ones(obj.NumUEs, numRBs); % Initialize with -1
+            mcsInfo = -1 * ones(numTotalUEs, numRBs); % Initialize with -1
 
             % Fetch MCS and frequency allocation
             columnIndexMap = obj.ColumnIndexMap;
-            mcsValues = obj.SchedulingLog{plotId}{upRowIndex, columnIndexMap('MCS Index')}; % [NumUEs × 1]
-            freqAlloc = obj.SchedulingLog{plotId}{upRowIndex, columnIndexMap('Frequency Allocation')}; % [NumUEs × 2] for RAT1, [NumUEs × numRBG] for RAT0
+            mcsValues = obj.SchedulingLog{carrierIdx, plotId}{upRowIndex, columnIndexMap('MCS Index')}; % [NumUEs × 1]
+            freqAlloc = obj.SchedulingLog{carrierIdx, plotId}{upRowIndex, columnIndexMap(obj.FreqAllocLabel)}; % [NumUEs × 2] for RAT1, [NumUEs × numRBG] for RAT0
 
             if obj.ResourceAllocationType % RAT1: freqAlloc is [NumUEs × 2] with [startRB, numRBs]
                 % Extract RB ranges (handle 0-based indexing)
@@ -988,7 +1237,7 @@ classdef helperNRSchedulingLogger < handle
             end
 
             % Assign MCS to allocated RBs using linear indexing
-            linearIdx = sub2ind([obj.NumUEs, numRBs], ueIndices, rbIndices);
+            linearIdx = sub2ind([numTotalUEs, numRBs], ueIndices, rbIndices);
             mcsInfo(linearIdx) = mcsValuesExpanded;
         end
 
@@ -1007,65 +1256,76 @@ classdef helperNRSchedulingLogger < handle
             ueNode = obj.UEs;
             obj.TraceIndexCounter = obj.TraceIndexCounter + 1;
             symbolNum = (obj.TraceIndexCounter - 1) * obj.LogGranularity + 1;
-            statusInfo.BufferSize = sum(gNB.MACEntity.LCHBufferStatus,2);
-            scheduler = gNB.MACEntity.Scheduler;
-            statusInfo.ULChannelQuality = [scheduler.UEContext.CSIMeasurementUL];
-            gNBStatistics = gNB.statistics("all");
-            % Read Tx bytes sent for each UE
-            obj.UEMetricsDL(:, 1) = [gNBStatistics.MAC.Destinations.TransmittedBytes]';
-            obj.UEMetricsDL(:, 2) = statusInfo.BufferSize; % Read pending buffer (in bytes) on gNB, for all the UEs
+            numTotalUEs = numel(obj.UEs);
 
-            % Read the NDI, DL and UL channel quality for the primary carrier for each of the UEs
-            for ueIdx = 1:obj.NumUEs
-                obj.HARQProcessStatusUL(ueIdx, :) = obj.UEs(ueIdx).MACEntity.ComponentCarrier(1).HARQNDIUL;
-                obj.HARQProcessStatusDL(ueIdx, :) = obj.UEs(ueIdx).MACEntity.ComponentCarrier(1).HARQNDIDL;
-                % Read the UL channel quality at gNB for each of the UEs for logging
-                obj.UplinkChannelQuality{ueIdx} = statusInfo.ULChannelQuality(ueIdx); % 1 for UL
-                % Read the DL channel quality at UEs for logging
-                ueStatusInfo.DLChannelQuality = ueNode(ueIdx).MACEntity.ComponentCarrier(1).CSIMeasurement;
-                ueStatusInfo.BufferSize = sum(ueNode(ueIdx).MACEntity.LCGBufferStatus);
-                ueStatistics = ueNode(ueIdx).statistics();
-                obj.DownlinkChannelQuality{ueIdx} = ueStatusInfo.DLChannelQuality; % 0 for DL
-                % Read transmitted bytes transmitted for the UE in the
-                % current TTI for logging
-                obj.UEMetricsUL(ueIdx, 1) = ueStatistics.MAC.TransmittedBytes;
-                obj.UEMetricsUL(ueIdx, 2) = ueStatusInfo.BufferSize; % Read pending buffer (in bytes) on UE
-            end
+            for carrierIdx = obj.CarrierID
+                connectedUEs = obj.UERNTIsPerCarrier{carrierIdx};
+                numUEsCC = obj.NumUEsPerCarrier(carrierIdx);
+                uePhyIdx = obj.UECarrierIndexMap{carrierIdx};
 
-            % Store the scheduling logs for the CarrierOfInterest at gNB
-            gNBCarrierIndex = obj.CarrierOfInterest;
-            if obj.DuplexMode == 1 % TDD
-                % Get current symbol type: DL/UL/Guard
-                numSlots = floor((symbolNum-1)/14);
-                dlulSlotIndex = mod(numSlots, scheduler.CellConfig(gNBCarrierIndex).NumDLULPatternSlots);
-                symbolIndex = mod(symbolNum-1, 14);
-                symbolType = scheduler.CellConfig(gNBCarrierIndex).DLULSlotFormat(dlulSlotIndex+1, symbolIndex+1);
-                if(symbolType == 0 && linkDir ~= 1) % DL
-                    metrics = obj.UEMetricsDL;
-                    metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsDL(:, 1);
-                    obj.PrevUEMetricsDL = obj.UEMetricsDL;
-                    logScheduling(obj, symbolNum, metrics, obj.DownlinkChannelQuality, obj.HARQProcessStatusDL, symbolType);
-                elseif(symbolType == 1 && linkDir ~= 0) % UL
-                    metrics = obj.UEMetricsUL;
-                    metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsUL(:, 1);
-                    obj.PrevUEMetricsUL = obj.UEMetricsUL;
-                    logScheduling(obj, symbolNum, metrics, obj.UplinkChannelQuality, obj.HARQProcessStatusUL, symbolType);
-                else % Guard
-                    logScheduling(obj, symbolNum, zeros(obj.NumUEs, 3), cell(obj.NumUEs, 0), zeros(obj.NumUEs, 16), symbolType);
+                statusInfo.BufferSize = sum(gNB.MACEntity.LCHBufferStatus,2);
+                scheduler = gNB.MACEntity.Scheduler;
+                statusInfo.ULChannelQuality = [scheduler.UEContext.CSIMeasurementUL];
+                gNBStatistics = gNB.statistics("all");
+
+                % Read Tx bytes sent for each UE
+                allTxBytes = [gNBStatistics.MAC.Destinations.TransmittedBytes]';
+                obj.UEMetricsDL{carrierIdx}(:, 1) = allTxBytes;
+                obj.UEMetricsDL{carrierIdx}(:, 2) = statusInfo.BufferSize; % Read pending buffer (in bytes) on gNB, for all the UEs
+
+                % Read the NDI, DL and UL channel quality for this carrier
+                % for each of the UEs
+                for posIdx = 1:numUEsCC
+                    ueIdx = connectedUEs(posIdx);
+                    ccIdx = uePhyIdx(posIdx);
+                    obj.HARQProcessStatusUL{carrierIdx}(ueIdx, :) = obj.UEs(ueIdx).MACEntity.ComponentCarrier(ccIdx).HARQNDIUL;
+                    obj.HARQProcessStatusDL{carrierIdx}(ueIdx, :) = obj.UEs(ueIdx).MACEntity.ComponentCarrier(ccIdx).HARQNDIDL;
+                    % Read the UL channel quality at gNB for each of the UEs for logging
+                    obj.UplinkChannelQuality{carrierIdx}{ueIdx} = statusInfo.ULChannelQuality(ueIdx);
+                    % Read the DL channel quality at UEs for logging
+                    ueStatusInfo.DLChannelQuality = ueNode(ueIdx).MACEntity.ComponentCarrier(ccIdx).CSIMeasurement;
+                    ueStatusInfo.BufferSize = sum(ueNode(ueIdx).MACEntity.LCGBufferStatus);
+                    ueStatistics = ueNode(ueIdx).statistics();
+                    obj.DownlinkChannelQuality{carrierIdx}{ueIdx} = ueStatusInfo.DLChannelQuality;
+                    % Read transmitted bytes for the UE in the current TTI for logging
+                    obj.UEMetricsUL{carrierIdx}(ueIdx, 1) = ueStatistics.MAC.TransmittedBytes;
+                    obj.UEMetricsUL{carrierIdx}(ueIdx, 2) = ueStatusInfo.BufferSize; % Read pending buffer (in bytes) on UE
                 end
-            else
-                % Store the scheduling logs
-                if linkDir ~= 1 %  DL
-                    metrics = obj.UEMetricsDL;
-                    metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsDL(:, 1);
-                    obj.PrevUEMetricsDL = obj.UEMetricsDL;
-                    logScheduling(obj, symbolNum, metrics, obj.DownlinkChannelQuality, obj.HARQProcessStatusDL, 0); % DL
-                end
-                if linkDir ~= 0 % UL
-                    metrics = obj.UEMetricsUL;
-                    metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsUL(:, 1);
-                    obj.PrevUEMetricsUL = obj.UEMetricsUL;
-                    logScheduling(obj, symbolNum, metrics, obj.UplinkChannelQuality, obj.HARQProcessStatusUL, 1); % UL
+
+                % Store the scheduling logs for this carrier
+                if obj.DuplexMode == 1 % TDD
+                    % Get current symbol type: DL/UL/Guard
+                    numSlots = floor((symbolNum-1)/14);
+                    dlulSlotIndex = mod(numSlots, scheduler.CellConfig(carrierIdx).NumDLULPatternSlots);
+                    symbolIndex = mod(symbolNum-1, 14);
+                    symbolType = scheduler.CellConfig(carrierIdx).DLULSlotFormat(dlulSlotIndex+1, symbolIndex+1);
+                    if(symbolType == 0 && linkDir ~= 1) % DL
+                        metrics = obj.UEMetricsDL{carrierIdx};
+                        metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsDL{carrierIdx}(:, 1);
+                        obj.PrevUEMetricsDL{carrierIdx} = obj.UEMetricsDL{carrierIdx};
+                        logScheduling(obj, symbolNum, metrics, obj.DownlinkChannelQuality{carrierIdx}, obj.HARQProcessStatusDL{carrierIdx}, symbolType, carrierIdx);
+                    elseif(symbolType == 1 && linkDir ~= 0) % UL
+                        metrics = obj.UEMetricsUL{carrierIdx};
+                        metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsUL{carrierIdx}(:, 1);
+                        obj.PrevUEMetricsUL{carrierIdx} = obj.UEMetricsUL{carrierIdx};
+                        logScheduling(obj, symbolNum, metrics, obj.UplinkChannelQuality{carrierIdx}, obj.HARQProcessStatusUL{carrierIdx}, symbolType, carrierIdx);
+                    else % Guard
+                        logScheduling(obj, symbolNum, zeros(numTotalUEs, 3), cell(numTotalUEs, 0), zeros(numTotalUEs, obj.NumHARQ), symbolType, carrierIdx);
+                    end
+                else
+                    % Store the scheduling logs
+                    if linkDir ~= 1 %  DL
+                        metrics = obj.UEMetricsDL{carrierIdx};
+                        metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsDL{carrierIdx}(:, 1);
+                        obj.PrevUEMetricsDL{carrierIdx} = obj.UEMetricsDL{carrierIdx};
+                        logScheduling(obj, symbolNum, metrics, obj.DownlinkChannelQuality{carrierIdx}, obj.HARQProcessStatusDL{carrierIdx}, 0, carrierIdx); % DL
+                    end
+                    if linkDir ~= 0 % UL
+                        metrics = obj.UEMetricsUL{carrierIdx};
+                        metrics(:, 1) = metrics(:, 1) - obj.PrevUEMetricsUL{carrierIdx}(:, 1);
+                        obj.PrevUEMetricsUL{carrierIdx} = obj.UEMetricsUL{carrierIdx};
+                        logScheduling(obj, symbolNum, metrics, obj.UplinkChannelQuality{carrierIdx}, obj.HARQProcessStatusUL{carrierIdx}, 1, carrierIdx); % UL
+                    end
                 end
             end
 
@@ -1083,24 +1343,24 @@ classdef helperNRSchedulingLogger < handle
             end
         end
 
-        function logScheduling(obj, symbolNumSimulation, UEMetrics, UECQIs, HarqProcessStatus, type)
+        function logScheduling(obj, symbolNumSimulation, UEMetrics, UECQIs, HarqProcessStatus, type, carrierIdx)
             %logScheduling Log the scheduling operations
             %
-            % logScheduling(OBJ, SYMBOLNUMSIMULATION,
-            % UEMETRICS, UECQIS, HARQPROCESSSTATUS, RXRESULTUES, TYPE) Logs
-            % the scheduling operations based on the input arguments
+            % logScheduling(OBJ, SYMBOLNUMSIMULATION, UEMETRICS, UECQIS,
+            % HARQPROCESSSTATUS, TYPE, CARRIERIDX) Logs the scheduling
+            % operations based on the input arguments
             %
             % SYMBOLNUMSIMULATION - Cumulative symbol number in the
             % simulation
             %
-            % UEMETRICS - N-by-P matrix where N represents the number of
+            % UEMETRICS - N-by-P matrix where N represents the total number of
             % UEs and P represents the number of metrics collected.
             %
-            % UECQIs - N-by-P matrix where N represents the number of
-            % UEs and P represents the number of RBs.
+            % UECQIS - N-by-1 cell array where N represents the total number of
+            % UEs. Each cell contains the channel quality for that UE.
             %
-            % HARQPROCESSSTATUS - N-by-P matrix where N represents the number of
-            % UEs and P represents the number of HARQ process.
+            % HARQPROCESSSTATUS - N-by-M matrix where N is the total number of
+            % UEs and M is the number of HARQ processes.
             %
             % TYPE - Type will be based on scheduling type.
             %        - In slot based scheduling type takes two values.
@@ -1110,6 +1370,8 @@ classdef helperNRSchedulingLogger < handle
             %        - In symbol based scheduling type takes three values.
             %          type = 0, represents the downlink, type = 1,
             %          represents uplink and type = 2 represents guard.
+            %
+            % CARRIERIDX - Index of the carrier (1 to NumCarriers)
 
             % Determine the log index based on link type and duplex mode
             if obj.DuplexMode == obj.FDDDuplexMode
@@ -1132,11 +1394,11 @@ classdef helperNRSchedulingLogger < handle
             timestamp = obj.CurrFrame * 10 + (obj.CurrSlot * slotDuration) + (obj.CurrSymbol * (slotDuration / 14));
 
             columnMap = obj.ColumnIndexMap;
-            obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Timestamp')} = timestamp;
-            obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Frame')} = obj.CurrFrame;
-            obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Slot')} = obj.CurrSlot;
+            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Timestamp (ms)')} = timestamp;
+            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Frame')} = obj.CurrFrame;
+            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Slot')} = obj.CurrSlot;
             if obj.SchedulingType % Symbol based scheduling
-                obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Symbol Number')} = obj.CurrSymbol;
+                obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Symbol Number')} = obj.CurrSymbol;
             end
 
             if(obj.DuplexMode == obj.TDDDuplexMode) % TDD
@@ -1149,20 +1411,20 @@ classdef helperNRSchedulingLogger < handle
                     case 2
                         symbolTypeDesc = 'Guard';
                 end
-                obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Type')} = symbolTypeDesc;
+                obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Type')} = symbolTypeDesc;
             end
 
-            obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Channel Quality')} = UECQIs;
-            obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('HARQ NDI Status')} = HarqProcessStatus;
-            obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Transmitted Bytes')} = UEMetrics(:, 1); % Transmitted bytes sent by UEs
-            obj.SchedulingLog{linkIndex}{symbolNumSimulation, columnMap('Buffer Status of UEs')} = UEMetrics(:, 2); % Current buffer status of UEs in bytes
+            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Channel Quality')} = UECQIs;
+            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('HARQ NDI Status')} = HarqProcessStatus;
+            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Transmitted Bytes')} = UEMetrics(:, 1); % Transmitted bytes sent by UEs
+            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation, columnMap('Buffer Status of UEs (bytes)')} = UEMetrics(:, 2); % Current buffer status of UEs in bytes
         end
 
         function logSchedulingGrants(obj, ~, eventData)
             %logSchedulingGrants Log the scheduling grant information
             %
-            % logScheduling(OBJ, EVENTSOURCE, EVENTDATA) Logs
-            % the scheduling information based on the received event data
+            % logSchedulingGrants(OBJ, EVENTSOURCE, EVENTDATA) Logs the
+            % scheduling grant information for each carrier in obj.CarrierID.
             %
             % EVENTSOURCE - Event source object
             %
@@ -1177,12 +1439,12 @@ classdef helperNRSchedulingLogger < handle
             grantLogsColumnIndexMap = obj.GrantLogsColumnIndexMap;
             grantList{1} = eventData.Data.DLGrants;
             grantList{2} = eventData.Data.ULGrants;
+            numTotalUEs = numel(obj.UEs);
 
             for grantIdx = 1:2
                 if(obj.DuplexMode == obj.TDDDuplexMode) % TDD
                     % Grant is received always in DL
                     linkIndex = 1;
-                    obj.SchedulingLog{linkIndex}{symbolNumSimulation+1, columnMap('Type')} = 'DL';
                 else
                     % Depending on PlotIds linkIndex will be set
                     if isscalar(obj.PlotIds)
@@ -1195,8 +1457,9 @@ classdef helperNRSchedulingLogger < handle
                 end
                 resourceAssignments = grantList{grantIdx};
                 for j = 1:numel(resourceAssignments)
-                    % Store logs only for the CarrierOfInterest. First carrier, by default
-                    if obj.CarrierOfInterest == resourceAssignments(j).GNBCarrierIndex
+                    carrierIdx = resourceAssignments(j).GNBCarrierIndex;
+                    % Store logs only for carriers in CarrierID
+                    if ismember(carrierIdx, obj.CarrierID)
                         % Fill logs w.r.t. each assignment
                         assignment = resourceAssignments(j);
                         % Calculate row number in the logs, for the Tx start
@@ -1206,58 +1469,65 @@ classdef helperNRSchedulingLogger < handle
 
                         allottedUE = assignment.RNTI;
 
+                        % Log in TDD mode
+                        if obj.DuplexMode == obj.TDDDuplexMode
+                            obj.SchedulingLog{carrierIdx, linkIndex}{symbolNumSimulation+1, columnMap('Type')} = 'DL';
+                        end
+
                         % Fill the start Tx symbol logs
-                        obj.SchedulingLog{linkIndex}{logIndex, columnMap('Frequency Allocation')}(allottedUE, :) = assignment.FrequencyAllocation;
-                        obj.SchedulingLog{linkIndex}{logIndex, columnMap('MCS Index')}(allottedUE) = assignment.MCSIndex;
-                        obj.SchedulingLog{linkIndex}{logIndex, columnMap('HARQ Process')}(allottedUE) = assignment.HARQID;
-                        obj.SchedulingLog{linkIndex}{logIndex, columnMap('NDI')}(allottedUE) = assignment.NDI;
+                        obj.SchedulingLog{carrierIdx, linkIndex}{logIndex, columnMap(obj.FreqAllocLabel)}(allottedUE, :) = assignment.FrequencyAllocation;
+                        obj.SchedulingLog{carrierIdx, linkIndex}{logIndex, columnMap('MCS Index')}(allottedUE) = assignment.MCSIndex;
+                        obj.SchedulingLog{carrierIdx, linkIndex}{logIndex, columnMap('HARQ Process')}(allottedUE) = assignment.HARQID;
+                        obj.SchedulingLog{carrierIdx, linkIndex}{logIndex, columnMap('NDI')}(allottedUE) = assignment.NDI;
                         if obj.SchedulingType % Symbol based scheduling
-                            obj.SchedulingLog{linkIndex}{logIndex, columnMap('Tx Type')}(allottedUE) = {[assignment.Type, '-Start']};
+                            obj.SchedulingLog{carrierIdx, linkIndex}{logIndex, columnMap('Tx Type')}(allottedUE) = {[assignment.Type, '-Start']};
                             % Fill the logs from the symbol after Tx start, up to
                             % the symbol before Tx end
                             for k = 1:assignment.NumSymbols-2
-                                obj.SchedulingLog{linkIndex}{logIndex + k, columnMap('Frequency Allocation')}(allottedUE, :) = assignment.FrequencyAllocation;
-                                obj.SchedulingLog{linkIndex}{logIndex + k, columnMap('MCS Index')}(allottedUE) = assignment.MCSIndex;
-                                obj.SchedulingLog{linkIndex}{logIndex + k, columnMap('HARQ Process')}(allottedUE) = assignment.HARQID;
-                                obj.SchedulingLog{linkIndex}{logIndex + k, columnMap('NDI')}(allottedUE) = assignment.NDI;
-                                obj.SchedulingLog{linkIndex}{logIndex + k, columnMap('Tx Type')}(allottedUE) = {[assignment.Type, '-InProgress']};
+                                obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + k, columnMap(obj.FreqAllocLabel)}(allottedUE, :) = assignment.FrequencyAllocation;
+                                obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + k, columnMap('MCS Index')}(allottedUE) = assignment.MCSIndex;
+                                obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + k, columnMap('HARQ Process')}(allottedUE) = assignment.HARQID;
+                                obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + k, columnMap('NDI')}(allottedUE) = assignment.NDI;
+                                obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + k, columnMap('Tx Type')}(allottedUE) = {[assignment.Type, '-InProgress']};
                             end
 
                             % Fill the last Tx symbol logs
-                            obj.SchedulingLog{linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('Frequency Allocation')}(allottedUE, :) = assignment.FrequencyAllocation;
-                            obj.SchedulingLog{linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('MCS Index')}(allottedUE) = assignment.MCSIndex;
-                            obj.SchedulingLog{linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('HARQ Process')}(allottedUE) = assignment.HARQID;
-                            obj.SchedulingLog{linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('NDI')}(allottedUE) = assignment.NDI;
-                            obj.SchedulingLog{linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('Tx Type')}(allottedUE) = {[assignment.Type, '-End']};
+                            obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + assignment.NumSymbols -1, columnMap(obj.FreqAllocLabel)}(allottedUE, :) = assignment.FrequencyAllocation;
+                            obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('MCS Index')}(allottedUE) = assignment.MCSIndex;
+                            obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('HARQ Process')}(allottedUE) = assignment.HARQID;
+                            obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('NDI')}(allottedUE) = assignment.NDI;
+                            obj.SchedulingLog{carrierIdx, linkIndex}{logIndex + assignment.NumSymbols -1, columnMap('Tx Type')}(allottedUE) = {[assignment.Type, '-End']};
                         else % Slot based scheduling
-                            obj.SchedulingLog{linkIndex}{logIndex, columnMap('Tx Type')}(allottedUE) = {assignment.Type};
+                            obj.SchedulingLog{carrierIdx, linkIndex}{logIndex, columnMap('Tx Type')}(allottedUE) = {assignment.Type};
                         end
-                        obj.GrantCount  = obj.GrantCount + 1;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('RNTI')} = assignment.RNTI;
+                        obj.GrantCount(carrierIdx) = obj.GrantCount(carrierIdx) + 1;
+                        gc = obj.GrantCount(carrierIdx);
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('RNTI')} = assignment.RNTI;
                         slotNumGrant = mod(currSlot + assignment.SlotOffset, obj.NumSlotsFrame);
                         if(currSlot + assignment.SlotOffset >= obj.NumSlotsFrame)
-                            frameNumGrant = currFrame + 1; % Assignment is for a slot in next frame
+                            numFrames = floor((currSlot + assignment.SlotOffset)/obj.NumSlotsFrame);
+                            frameNumGrant = currFrame + numFrames; % Assignment is for a slot in future frame
                         else
                             frameNumGrant = currFrame;
                         end
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Frame')} = frameNumGrant;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Slot')} = slotNumGrant;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Frequency Allocation')} = assignment.FrequencyAllocation;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Start Symbol')} = assignment.StartSymbol;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Num Symbols')} = assignment.NumSymbols;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('MCS Index')} = assignment.MCSIndex;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('NumLayers')} = assignment.NumLayers;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('HARQ Process')} = assignment.HARQID;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('NDI')} = assignment.NDI;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('RV')} = assignment.RV;
-                        obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Tx Type')} = assignment.Type;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Frame')} = frameNumGrant;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Slot')} = slotNumGrant;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap(obj.FreqAllocLabel)} = assignment.FrequencyAllocation;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Start Symbol')} = assignment.StartSymbol;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Num Symbols')} = assignment.NumSymbols;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('MCS Index')} = assignment.MCSIndex;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('NumLayers')} = assignment.NumLayers;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('HARQ Process')} = assignment.HARQID;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('NDI')} = assignment.NDI;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('RV')} = assignment.RV;
+                        obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Tx Type')} = assignment.Type;
                         if(isfield(assignment, 'FeedbackSlotOffset'))
                             % DL grant
-                            obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Feedback Slot Offset (DL grants only)')} = assignment.FeedbackSlotOffset;
-                            obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Grant Type')} = 'DL';
+                            obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Feedback Slot Offset (DL grants only)')} = assignment.FeedbackSlotOffset;
+                            obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Grant Type')} = 'DL';
                         else
-                            % UL Grant
-                            obj.GrantLog{obj.GrantCount, grantLogsColumnIndexMap('Grant Type')} = 'UL';
+                            % UL grant
+                            obj.GrantLog{carrierIdx}{gc, grantLogsColumnIndexMap('Grant Type')} = 'UL';
                         end
                     end
                 end
@@ -1266,70 +1536,107 @@ classdef helperNRSchedulingLogger < handle
 
         function varargout = getSchedulingLogs(obj)
             %getSchedulingLogs Get the per-symbol logs of the whole simulation
+            %
+            % [DL, UL] = getSchedulingLogs(OBJ) Returns the
+            % scheduling logs for the specified carrier(s). If CARRIERIDX is
+            % not specified, defaults to obj.CarrierID. CARRIERIDX can be
+            % a scalar or vector of carrier indices.
 
+            carrierIdx = obj.CarrierID;
             % Get keys of columns (i.e. column names) in sorted order of values (i.e. column indices)
-            if obj.NumUEs == 0
+            numTotalUEs = numel(obj.UEs);
+            if numTotalUEs == 0
                 varargout = {[],[]};
                 return;
             end
             [~, idx] = sort(cell2mat(values(obj.ColumnIndexMap)));
             columnTitles = keys(obj.ColumnIndexMap);
             columnTitles = columnTitles(idx);
+
+            numCarriersQuery = numel(carrierIdx);
+            % Each output is a cell array with one element per carrier
             varargout = cell(obj.NumLogs, 1);
-
             for logIdx = 1:obj.NumLogs
-                if isempty(obj.SchedulingLog{logIdx})
-                    continue;
-                end
-                if obj.SchedulingType
-                    % Symbol based scheduling
-                    finalLogIndex = (obj.CurrFrame)*obj.NumSlotsFrame*obj.NumSym + (obj.CurrSlot)*obj.NumSym + obj.CurrSymbol + 1;
-                    obj.SchedulingLog{logIdx} = obj.SchedulingLog{logIdx}(1:finalLogIndex, :);
-                    % For symbol based scheduling, keep 1 row per symbol
-                    varargout{logIdx} = [columnTitles; obj.SchedulingLog{logIdx}(1:finalLogIndex, :)];
-                else
-                    % Slot based scheduling
-                    finalLogIndex = (obj.CurrFrame)*obj.NumSlotsFrame*obj.NumSym + (obj.CurrSlot+1)*obj.NumSym;
-                    obj.SchedulingLog{logIdx} = obj.SchedulingLog{logIdx}(1:finalLogIndex, :);
-                    % For slot based scheduling: keep 1 row per slot
-                    finalLog = obj.SchedulingLog{logIdx}(1:obj.NumSym:finalLogIndex, :);
+                varargout{logIdx} = cell(1, numCarriersQuery);
+            end
 
-                    if obj.HasSpecialSlot % If there is a special slot (for TDD mode)
-                        gNB = obj.GNB;
-                        dlulConfig = gNB.DLULConfigTDD;
-                        logSize = size(finalLog, 1);
-                        % Calculate the indices for special slots within the DL/UL pattern
-                        specialSlotIndicies = dlulConfig.NumDLSlots:obj.NumDLULPatternSlots:logSize;
-                        for idx = 1:numel(specialSlotIndicies)
-                            % Update the 'Type' column for each special slot
-                            finalLog{specialSlotIndicies(idx)+1, obj.ColumnIndexMap('Type')} = 'S';
-                        end
+            for cIdx = 1:numCarriersQuery
+                c = carrierIdx(cIdx);
+                for logIdx = 1:obj.NumLogs
+                    if isempty(obj.SchedulingLog{c, logIdx})
+                        continue;
                     end
-                    varargout{logIdx} = [columnTitles; finalLog];
+                    if obj.SchedulingType
+                        % Symbol based scheduling
+                        finalLogIndex = (obj.CurrFrame)*obj.NumSlotsFrame*obj.NumSym + (obj.CurrSlot)*obj.NumSym + obj.CurrSymbol + 1;
+                        obj.SchedulingLog{c, logIdx} = obj.SchedulingLog{c, logIdx}(1:finalLogIndex, :);
+                        varargout{logIdx}{cIdx} = [columnTitles; obj.SchedulingLog{c, logIdx}(1:finalLogIndex, :)];
+                    else
+                        % Slot based scheduling
+                        finalLogIndex = (obj.CurrFrame)*obj.NumSlotsFrame*obj.NumSym + (obj.CurrSlot+1)*obj.NumSym;
+                        obj.SchedulingLog{c, logIdx} = obj.SchedulingLog{c, logIdx}(1:finalLogIndex, :);
+                        % For slot based scheduling: keep 1 row per slot
+                        finalLog = obj.SchedulingLog{c, logIdx}(1:obj.NumSym:finalLogIndex, :);
+
+                        if obj.HasSpecialSlot % If there is a special slot (for TDD mode)
+                            gNB = obj.GNB;
+                            dlulConfig = gNB.DLULConfigTDD;
+                            logSize = size(finalLog, 1);
+                            % Calculate the indices for special slots within the DL/UL pattern
+                            specialSlotIndicies = dlulConfig.NumDLSlots:obj.NumDLULPatternSlots:logSize;
+                            for sidx = 1:numel(specialSlotIndicies)
+                                % Update the 'Type' column for each special slot
+                                finalLog{specialSlotIndicies(sidx)+1, obj.ColumnIndexMap('Type')} = 'S';
+                            end
+                        end
+                        varargout{logIdx}{cIdx} = [columnTitles; finalLog];
+                    end
+                end
+            end
+
+            % If scalar carrier, unwrap the cell array for backward compatibility
+            if numCarriersQuery == 1
+                for logIdx = 1:obj.NumLogs
+                    varargout{logIdx} = varargout{logIdx}{1};
                 end
             end
         end
 
         function logs = getGrantLogs(obj)
-            %getGrantLogs Get the scheduling assignment logs of the whole simulation
-
+            %getGrantLogs Get the scheduling assignment logs for the specified carrier(s)
+            %
+            % LOGS = getGrantLogs(OBJ) Returns the grant logs
+            % for the specified carrier(s).
+            
+            carrierIdx = obj.CarrierID;
             % Get keys of columns (i.e. column names) in sorted order of values (i.e. column indices)
-            % Get keys of columns (i.e. column names) in sorted order of values (i.e. column indices)
-            if obj.NumUEs == 0
+            numTotalUEs = numel(obj.UEs);
+            if numTotalUEs == 0
                 logs = [];
                 return;
             end
             [~, idx] = sort(cell2mat(values(obj.GrantLogsColumnIndexMap)));
             columnTitles = keys(obj.GrantLogsColumnIndexMap);
             columnTitles = columnTitles(idx);
-            % Read valid rows
-            obj.GrantLog = obj.GrantLog(1:obj.GrantCount, :);
-            logs = [columnTitles; obj.GrantLog];
+
+            numCarriersQuery = numel(carrierIdx);
+            logs = cell(1, numCarriersQuery);
+            for cIdx = 1:numCarriersQuery
+                c = carrierIdx(cIdx);
+                gc = obj.GrantCount(c);
+                obj.GrantLog{c} = obj.GrantLog{c}(1:gc, :);
+                logs{cIdx} = [columnTitles; obj.GrantLog{c}];
+            end
+
+            % If scalar carrier, unwrap the cell array for backward compatibility
+            if numCarriersQuery == 1
+                logs = logs{1};
+            end
         end
 
         function [dlStats, ulStats] = getPerformanceIndicators(obj)
-            %getPerformanceIndicators Outputs the data rate, spectral
-            % efficiency values
+            %getPerformanceIndicators Outputs the aggregate data rate, spectral
+            % efficiency values across all carriers
             %
             % DLSTATS - Row vector of length 4, with these statistics in
             %           the downlink direction: Theoretical peak data rate,
@@ -1340,24 +1647,31 @@ classdef helperNRSchedulingLogger < handle
             %           achieved data rate, theoretical peak spectral
             %           efficiency, achieved spectral efficiency
 
+            carrierIdx = obj.CarrierID;
             transmittedBytes = obj.ColumnIndexMap('Transmitted Bytes');
-            if obj.DuplexMode == obj.FDDDuplexMode
-                if ismember(obj.DownlinkIdx, obj.PlotIds)
-                    totalDLTxBytes = sum(cell2mat(obj.SchedulingLog{obj.DownlinkIdx}(:,  transmittedBytes)));
+            totalDLTxBytes = 0;
+            totalULTxBytes = 0;
+
+            % Sum transmitted bytes across all queried carriers
+            for cIdx = 1:numel(carrierIdx)
+                c = carrierIdx(cIdx);
+                if obj.DuplexMode == obj.FDDDuplexMode
+                    if ismember(obj.DownlinkIdx, obj.PlotIds)
+                        totalDLTxBytes = totalDLTxBytes + sum(cell2mat(obj.SchedulingLog{c, obj.DownlinkIdx}(:, transmittedBytes)));
+                    end
+                    if ismember(obj.UplinkIdx, obj.PlotIds)
+                        totalULTxBytes = totalULTxBytes + sum(cell2mat(obj.SchedulingLog{c, obj.UplinkIdx}(:, transmittedBytes)));
+                    end
+                else
+                    linkType = obj.ColumnIndexMap('Type');
+                    dlIdx = strcmp(obj.SchedulingLog{c, 1}(:, linkType), 'DL');
+                    totalDLTxBytes = totalDLTxBytes + sum(cell2mat(obj.SchedulingLog{c, 1}(dlIdx, transmittedBytes)));
+                    ulIdx = strcmp(obj.SchedulingLog{c, 1}(:, linkType), 'UL');
+                    totalULTxBytes = totalULTxBytes + sum(cell2mat(obj.SchedulingLog{c, 1}(ulIdx, transmittedBytes)));
                 end
-                if ismember(obj.UplinkIdx, obj.PlotIds)
-                    totalULTxBytes = sum(cell2mat(obj.SchedulingLog{obj.UplinkIdx}(:,  transmittedBytes)));
-                end
-            else
-                linkType = obj.ColumnIndexMap('Type');
-                dlIdx = strcmp(obj.SchedulingLog{1}(:, linkType), 'DL');
-                totalDLTxBytes = sum(cell2mat(obj.SchedulingLog{1}(dlIdx,  transmittedBytes)));
-                ulIdx = strcmp(obj.SchedulingLog{1}(:, linkType), 'UL');
-                totalULTxBytes = sum(cell2mat(obj.SchedulingLog{1}(ulIdx,  transmittedBytes)));
             end
             dlStats = zeros(1,4);
             ulStats = zeros(1,4);
-
             % Downlink stats
             if ismember(obj.DownlinkIdx, obj.PlotIds)
                 dlStats(1) = obj.PeakDataRateDL;
@@ -1406,12 +1720,12 @@ classdef helperNRSchedulingLogger < handle
             end
         end
 
-        function logFormat = constructSchedulingLogFormat(obj, linkIdx)
-            %constructSchedulingLogFormat Construct log format
+        function logFormat = constructSchedulingLogFormat(obj, linkIdx, numTotalUEs)
+            %constructSchedulingLogFormat Construct log format for a carrier
 
             columnIndex = 1;
             logFormat{1, columnIndex} = 0; % Timestamp (in milliseconds)
-            obj.ColumnIndexMap('Timestamp') = columnIndex;
+            obj.ColumnIndexMap('Timestamp (ms)') = columnIndex;
 
             columnIndex = columnIndex + 1;
             logFormat{1, columnIndex} = 0; % Frame number
@@ -1437,26 +1751,26 @@ classdef helperNRSchedulingLogger < handle
 
             columnIndex = columnIndex + 1;
             if obj.ResourceAllocationType % RAT-1
-                logFormat{1, columnIndex} = zeros (obj.NumUEs, 2); % RB allocation for UEs
+                logFormat{1, columnIndex} = zeros (numTotalUEs, 2); % RB allocation for UEs
             else  % RAT-0
-                logFormat{1, columnIndex} = zeros(obj.NumUEs, ceil(obj.NumRBs(linkIdx) / obj.RBGSize(linkIdx))); % RBG allocation for UEs
+                logFormat{1, columnIndex} = zeros(numTotalUEs, ceil(obj.NumRBs(linkIdx) / obj.RBGSize(linkIdx))); % RBG allocation for UEs
             end
-            obj.ColumnIndexMap('Frequency Allocation') = columnIndex;
+            obj.ColumnIndexMap(obj.FreqAllocLabel) = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = -1*ones(obj.NumUEs, 1); % MCS for assignments
+            logFormat{1, columnIndex} = -1*ones(numTotalUEs, 1); % MCS for assignments
             obj.ColumnIndexMap('MCS Index') = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = -1*ones(obj.NumUEs, 1); % HARQ IDs for assignments
+            logFormat{1, columnIndex} = -1*ones(numTotalUEs, 1); % HARQ IDs for assignments
             obj.ColumnIndexMap('HARQ Process') = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = -1*ones(obj.NumUEs, 1); % NDI flag for assignments
+            logFormat{1, columnIndex} = -1*ones(numTotalUEs, 1); % NDI flag for assignments
             obj.ColumnIndexMap('NDI') = columnIndex;
 
             % Tx type of the assignments ('newTx' or 'reTx'), 'noTx' if there is no assignment
-            txTypeUEs =  cell(obj.NumUEs, 1);
+            txTypeUEs =  cell(numTotalUEs, 1);
             txTypeUEs(:) = {'noTx'};
             columnIndex = columnIndex + 1;
             logFormat{1, columnIndex} = txTypeUEs;
@@ -1470,39 +1784,49 @@ classdef helperNRSchedulingLogger < handle
                 % Initialize CSI report format for UL
                 csiReport = struct('RankIndicator', 1, 'TPMI', [], 'MCSIndex', 0);
             end
-            logFormat{1, columnIndex} = repmat({csiReport}, obj.NumUEs, 1); % Channel quality
+            logFormat{1, columnIndex} = repmat({csiReport}, numTotalUEs, 1); % Channel quality
             obj.ColumnIndexMap('Channel Quality') = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = zeros(obj.NumUEs, obj.NumHARQ); % HARQ process status
+            logFormat{1, columnIndex} = zeros(numTotalUEs, obj.NumHARQ); % HARQ process status
             obj.ColumnIndexMap('HARQ NDI Status') = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = zeros(obj.NumUEs, 1); % MAC bytes transmitted
+            logFormat{1, columnIndex} = zeros(numTotalUEs, 1); % MAC bytes transmitted
             obj.ColumnIndexMap('Transmitted Bytes') = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = zeros(obj.NumUEs, 1); % UEs' buffer status
-            obj.ColumnIndexMap('Buffer Status of UEs') = columnIndex;
+            logFormat{1, columnIndex} = zeros(numTotalUEs, 1); % UEs' buffer status
+            obj.ColumnIndexMap('Buffer Status of UEs (bytes)') = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = -Inf(obj.NumUEs, 1); % SINR values
-            obj.ColumnIndexMap('SINR') = columnIndex;
+            logFormat{1, columnIndex} = -Inf(numTotalUEs, 1); % SINR values
+            obj.ColumnIndexMap('SINR (dB)') = columnIndex;
 
             columnIndex = columnIndex + 1;
-            logFormat{1, columnIndex} = strings(obj.NumUEs, 1); % Received signal type
+            logFormat{1, columnIndex} = strings(numTotalUEs, 1); % Received signal type
             obj.ColumnIndexMap('Signal Type') = columnIndex;
+
+            if obj.IsNTNSimulation
+                columnIndex = columnIndex + 1;
+                logFormat{1, columnIndex} = NaN(numTotalUEs, 1); % UE transmission time in ms
+                obj.ColumnIndexMap('UE Tx Time (ms) (UL only)') = columnIndex;
+
+                columnIndex = columnIndex + 1;
+                logFormat{1, columnIndex} = NaN(numTotalUEs, 1); % UE reception time in ms
+                obj.ColumnIndexMap('UE Rx Time (ms) (DL only)') = columnIndex;
+            end
 
             % Initialize scheduling log for all the symbols in the
             % simulation time. The last time scheduler runs in the
             % simulation, it might assign resources for future slots which
             % are outside of simulation time. Storing those decisions too
-            numSlotsSim = obj.NumFrames * obj.NumSlotsFrame; % Simulation time in units of slot duration
+            numSlotsSim = round(obj.NumFrames * obj.NumSlotsFrame); % Simulation time in units of slot duration
             logFormat = repmat(logFormat(1,:), (numSlotsSim + obj.NumSlotsFrame)*obj.NumSym , 1);
         end
 
-        function logFormat = constructGrantLogFormat(obj)
-            %constructGrantLogFormat Construct grant log format
+        function logFormat = constructGrantLogFormat(obj, numTotalUEs)
+            %constructGrantLogFormat Construct grant log format for a carrier
 
             columnIndex = 1;
             logFormat{1, columnIndex} = -1; % UE's RNTI
@@ -1522,7 +1846,7 @@ classdef helperNRSchedulingLogger < handle
 
             columnIndex = columnIndex + 1;
             logFormat{1, columnIndex} = {''}; % Frequency allocation for UEs
-            obj.GrantLogsColumnIndexMap('Frequency Allocation') = columnIndex;
+            obj.GrantLogsColumnIndexMap(obj.FreqAllocLabel) = columnIndex;
 
             columnIndex = columnIndex + 1;
             logFormat{1, columnIndex} = -1; % Start Symbol
@@ -1565,9 +1889,9 @@ classdef helperNRSchedulingLogger < handle
             % simulation, it might assign resources for future slots which
             % are outside of simulation time. Storing those decisions too
             if obj.SchedulingType == 1
-                maxRows = obj.NumFrames*obj.NumSlotsFrame*obj.NumUEs*(ceil(obj.NumSym/gNB.MACEntity.Scheduler.TTIGranularity));
+                maxRows = round(obj.NumFrames*obj.NumSlotsFrame)*numTotalUEs*(ceil(obj.NumSym/obj.GNB.MACEntity.Scheduler.TTIGranularity));
             else
-                maxRows = obj.NumFrames*obj.NumSlotsFrame*obj.NumUEs;
+                maxRows = round(obj.NumFrames*obj.NumSlotsFrame)*numTotalUEs;
             end
             logFormat = repmat(logFormat(1,:), maxRows , 1);
         end

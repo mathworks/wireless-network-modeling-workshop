@@ -49,7 +49,8 @@ classdef hNRKPIManager < handle
 
     properties (Constant, Access = private)
         %ValidKPIList Set of valid KPIs
-        ValidKPIList = ["app-latency" "app-user-perceived-throughput", "mac-prb-usage" "phy-bler"];
+        ValidKPIList = ["app-latency" "app-user-perceived-throughput", ...
+            "mac-prb-usage" "mac-throughput" "phy-bler"];
     end
 
     properties (WeakHandle, Access = private)
@@ -122,7 +123,7 @@ classdef hNRKPIManager < handle
         %(downlink and uplink), and P is the number of intervals for data collection.
         %The number of intervals are equal to ceil(simulation time/log interval). The
         %element at index (i,j,k) corresponds to the number of PHY packets decode
-        %failures occured over link j for gNB node i during log interval k
+        %failures occurred over link j for gNB node i during log interval k
         NumDecodeFailuresPerCell
 
         %NumReceivedPackets Number of packets received per connection. An array of size
@@ -168,6 +169,14 @@ classdef hNRKPIManager < handle
 
         %LastIntervalIdx Last KPI logged interval index
         LastIntervalIdx = 0
+
+        %MACRxBytesPerConnection MAC received bytes per connection. An array of
+        %size M-N-P where M and N are the number of nodes to monitor and P is the
+        %number of intervals for data collection. The number of intervals are equal
+        %to ceil(simulation time/log interval). The element at index (i,j,k)
+        %corresponds to the MAC bytes received at destination node j from source
+        %node i during log interval k. Unconnected node pairs contain zeros.
+        MACRxBytesPerConnection
     end
 
     properties (Constant, Hidden)
@@ -265,6 +274,7 @@ classdef hNRKPIManager < handle
             %                                       layer. Its units are in seconds.
             %                     "phy-bler"      - BLER measured at the physical layer.
             %                     "mac-prb-usage" - PRB usage ratio measured at the MAC layer.
+            %                     "mac-throughput"- Throughput at the MAC layer, in Mbps.
             %
             %   Name-Value Arguments:
             %
@@ -275,8 +285,8 @@ classdef hNRKPIManager < handle
             %               Defaults to Inf.
             %
             %   LinkType  - Specifies the link type for cell-level KPIs as "DL" or "UL".
-            %               This argument applies when KPISTRING is set to "mac-prb-usage"
-            %               and "phy-bler". Defaults to "DL".
+            %               This argument applies when KPISTRING is set to either
+            %               "mac-prb-usage", "mac-throughput" or "phy-bler". Defaults to "DL".
 
             arguments
                 obj (1,1)
@@ -376,6 +386,8 @@ classdef hNRKPIManager < handle
                     kpiValue(kpiIdx) = calculateBLER(obj, currentSourceNode, currentDestinationNode, options.LinkType, intervalIndices);
                 elseif kpiString == "mac-prb-usage"
                     kpiValue(kpiIdx) = calculatePRBUsage(obj, currentSourceNode, options.LinkType, intervalIndices);
+                elseif kpiString == "mac-throughput"
+                    kpiValue(kpiIdx) = calculateMACThroughput(obj, currentSourceNode, currentDestinationNode, options.LinkType, intervalIndices);
                 end
             end
         end
@@ -409,6 +421,7 @@ classdef hNRKPIManager < handle
             obj.NumDecodeFailures = zeros(numNodes, numNodes, numIntervals);
             obj.NumAppReceivedPackets = zeros(numNodes, numNodes, numIntervals);
             obj.TotalAppReceivedLatency = zeros(numNodes, numNodes, numIntervals);
+            obj.MACRxBytesPerConnection = zeros(numNodes, numNodes, numIntervals);
 
             % Initialize matrices to store resource block usage data for each gNB on each
             % link and interval
@@ -512,13 +525,34 @@ classdef hNRKPIManager < handle
                             updateKPI(obj, ["NumAppReceivedPackets" "TotalAppReceivedLatency"], connectionIdx, gNBIdx, ...
                                 intervalIdx, [numReceivedPackets totalLatency]);
                         end
+                    elseif kpiString == "mac-throughput"
+                        for ueIdx = 1:obj.NumUEs
+                            ueNode = obj.UE(ueIdx);
+
+                            % Only collect data for UEs connected to this gNB
+                            if ~ismember(ueNode.ID, gNBNode.UENodeIDs)
+                                continue; % Skip this UE, it's not connected to this gNB
+                            end
+
+                            connectionIdx = ueIdx + obj.NumGNBs;
+
+                            % Get MAC throughput context for downlink
+                            rxBytes = obj.getMACThroughputContext(gNBNode, ueNode, obj.Downlink);
+                            updateKPI(obj, "MACRxBytesPerConnection", ...
+                                gNBIdx, connectionIdx, intervalIdx, rxBytes);
+
+                            % Get MAC throughput context for uplink
+                            rxBytes = obj.getMACThroughputContext(ueNode, gNBNode, obj.Uplink);
+                            updateKPI(obj, "MACRxBytesPerConnection", ...
+                                connectionIdx, gNBIdx, intervalIdx, rxBytes);
+                        end
                     end
                 end
             end
         end
-	end
-	
-	methods (Access = private)
+    end
+
+    methods (Access = private)
         function [totalLatency, receivedPackets] = getAppLatencyContext(~, sourceNode, destinationNode)
             %getAppLatencyContext Return the packet latency (in seconds) for the connection
             %between the sourceNode and the destinationNode
@@ -583,9 +617,9 @@ classdef hNRKPIManager < handle
                     % Check if the link type is downlink
                     if linkType == obj.Downlink
                         % Sum the decode failures for the destination node
-                        numPXSCHFailures = numPXSCHFailures + carrierPHYStat(carrierIdx).DecodeFailures;
+                        numPXSCHFailures = numPXSCHFailures + carrierPHYStat.DecodeFailures;
                         % Sum the received packets for the destination node
-                        numPXSCHPackets = numPXSCHPackets + carrierPHYStat(carrierIdx).ReceivedPackets;
+                        numPXSCHPackets = numPXSCHPackets + carrierPHYStat.ReceivedPackets;
                     else
                         for idx = 1:numel(carrierPHYStat) % For each connected UE
                             if sourceNode.ID == carrierPHYStat(idx).UEID % UE matched
@@ -596,6 +630,23 @@ classdef hNRKPIManager < handle
                         end
                     end
                 end
+            end
+        end
+
+        function rxBytes = getMACThroughputContext(obj, sourceNode, destinationNode, linkType)
+            %getMACThroughputContext Return MAC received bytes
+            % Returns cumulative bytes from statistics API
+
+            % Connection-level throughput
+            if linkType == obj.Downlink
+                % Rx bytes from UE
+                ueMACStats = statistics(destinationNode).MAC;
+                rxBytes = ueMACStats.ReceivedBytes;
+            else % Uplink
+                % Rx bytes from gNB
+                gNBMACStats = statistics(destinationNode, "all").MAC.Destinations;
+                rnti = sourceNode.RNTI;
+                rxBytes = gNBMACStats(rnti).ReceivedBytes;
             end
         end
 
@@ -664,10 +715,20 @@ classdef hNRKPIManager < handle
             elseif strcmpi(kpiString, "phy-bler")
                 % Set KPI string for BLER
                 kpiString = "phy-bler";
+            elseif strcmpi(kpiString, "mac-throughput")
+                % MAC throughput can be cell-level or connection-level
+                if numDestinations == 0
+                    % Cell-level: source must be gNB
+                    if ~isa(sourceNode, "nrGNB")
+                        error("Source node must be an object of type 'nrGNB' for cell-level KPI: %s.", kpiString);
+                    end
+                end
+                % MAC throughput can be calculated at both connection and cell level
+                kpiString = "mac-throughput";
             else
                 % Throw an error if the KPI is invalid
                 error("KPI string must be 'app-latency', 'app-user-perceived-throughput', " + ...
-                    "'mac-prb-usage', or 'phy-bler'.");
+                    "'mac-prb-usage', 'mac-throughput' or 'phy-bler'.");
             end
         end
 
@@ -793,6 +854,46 @@ classdef hNRKPIManager < handle
             end
         end
 
+        function value = calculateMACThroughput(obj, sourceNode, destinationNode, linkType, intervalIndices)
+            %calculateMACThroughput Calculate MAC layer throughput (in Mbps)
+
+            if obj.LogInterval == Inf
+                duration = obj.NetworkSimulator.EndTime;  % Use simulation time
+            else
+                duration = numel(intervalIndices) * obj.LogInterval;
+            end
+
+            if isempty(destinationNode)
+                % Cell-level throughput: sourceNode is validated to be a gNB
+                gNBNodeIdx = obj.NodeIDList == sourceNode.ID;
+                totalRxBytes = 0;
+
+                for ueIdx = 1:obj.NumUEs
+                    ueNode = obj.UE(ueIdx);
+
+                    ueNodeIdx = obj.NodeIDList == ueNode.ID;
+
+                    if linkType == "DL"
+                        totalRxBytes = totalRxBytes + ...
+                            sum(obj.MACRxBytesPerConnection(gNBNodeIdx, ueNodeIdx, intervalIndices));
+                    else
+                        totalRxBytes = totalRxBytes + ...
+                            sum(obj.MACRxBytesPerConnection(ueNodeIdx, gNBNodeIdx, intervalIndices));
+                    end
+                end
+
+                % Convert to Mbps
+                value = (totalRxBytes * 8) / (duration * 1e6);
+            else
+                % Connection-level throughput
+                sourceNodeIdx = obj.NodeIDList == sourceNode.ID;
+                destinationNodeIdx = obj.NodeIDList == destinationNode.ID;
+
+                totalRxBytes = sum(obj.MACRxBytesPerConnection(sourceNodeIdx, destinationNodeIdx, intervalIndices));
+                value = (totalRxBytes * 8) / (duration * 1e6);
+            end
+        end
+
         function updateUPTStatistics(obj, sourceNodeIdx, dstNodeIdx, trafficID, fileID, ...
                 fileGenerationTime, pktReceptionTime, packetLength, eofMarker)
 
@@ -823,7 +924,7 @@ classdef hNRKPIManager < handle
 
             trafficStatsForUPT(rxContextIdx).RxEndTime = pktReceptionTime;
             trafficStatsForUPT(rxContextIdx).ReceivedBytesWithOH = ...
-                    trafficStatsForUPT(rxContextIdx).ReceivedBytesWithOH + packetLength;
+                trafficStatsForUPT(rxContextIdx).ReceivedBytesWithOH + packetLength;
             trafficStatsForUPT(rxContextIdx).ReceivedBytes = ...
                 trafficStatsForUPT(rxContextIdx).ReceivedBytes + packetLength - networkTrafficFTP.TCPIPOverhead;
             % If an EOF marker is provided, update the file size
@@ -887,7 +988,7 @@ classdef hNRKPIManager < handle
             % Find the indices of the source and destination nodes in the list of nodes
             sourceNodeIdx = obj.NodeIDList == packetInfo.SourceNodeID;
             destinationNodeIdx = obj.NodeIDList == eventInfo.Source.ID;
- 
+
             % Don't log any information related to unregistered nodes
             if all(sourceNodeIdx == 0) || all(destinationNodeIdx == 0)
                 return;

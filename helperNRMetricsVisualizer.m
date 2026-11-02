@@ -54,6 +54,9 @@ classdef helperNRMetricsVisualizer < handle
         % of one metrics step.
         PlotCDFMetrics (1,1) logical = false;
 
+        %ShowPeakDataRate Show peak data rate reference line in MAC plots
+        ShowPeakDataRate (1,1) logical = true;
+
         %RefreshRate Visualization refresh rate in Hz
         RefreshRate (1,1) double {mustBePositive, mustBeInteger} = 10;
     end
@@ -80,7 +83,7 @@ classdef helperNRMetricsVisualizer < handle
         %AvgBLER Average block error rate (BLER) for CellOfInterest
         % Matrix of size 'MetricsStepDuration-by-2', where 2 represents the columns
         % for downlink and uplink
-        AvgBLER 
+        AvgBLER
 
         %CellThroughput Cell throughput of CellOfInterest
         % Matrix of size 'MetricsStepDuration-by-2', where 2 represents the columns
@@ -105,19 +108,25 @@ classdef helperNRMetricsVisualizer < handle
         % It is a column vector of length M, where M represents the number of UEs
         DLRLCMetrics
 
-        %PeakDataRateDL Theoretical peak data rate
+        %PeakDataRate Theoretical peak data rate (Mbps)
         % A vector of two elements. First and second elements represent the
-        % downlink and uplink theoretical peak data rate respectively
+        % downlink and uplink theoretical peak data rate respectively. For CA,
+        % this is the aggregate peak data rate summed across all component
+        % carriers, accounting for per-carrier SCS and TDD configuration.
         PeakDataRate = zeros(2, 1);
 
         %TargetBLER Target BLER
         % Same value for downlink and uplink
         TargetBLER = 0.1;
 
-        %Bandwidth Carrier bandwidth
-        % A vector of two elements and represents the downlink and uplink bandwidth
-        % respectively
+        %Bandwidth Total aggregated bandwidth across all component carriers
+        % A vector of two elements. First and second elements represent the
+        % total downlink and uplink bandwidth respectively. For CA, this is
+        % the sum of bandwidths across all configured component carriers.
         Bandwidth
+
+        %NumCarriers Number of component carriers configured at the gNB
+        NumCarriers = 1
 
         %UELegend Legend for the UE
         UELegend
@@ -157,7 +166,13 @@ classdef helperNRMetricsVisualizer < handle
         LinkDirectionIdx
 
         %RefreshInterval Indicate the time duration between metric updates (in seconds)
-        RefreshInterval 
+        RefreshInterval
+
+        %LastMetricsUpdateTime Simulation time (in seconds) of the last metrics update
+        LastMetricsUpdateTime = 0
+
+        %LastLatencyUpdateTime Simulation time (in seconds) of the last latency calculation
+        LastLatencyUpdateTime = 0
     end
 
     properties (WeakHandle, SetAccess = private)
@@ -261,9 +276,12 @@ classdef helperNRMetricsVisualizer < handle
             obj.ULRLCMetrics = zeros(totalNumUEs, 1);
             obj.DLRLCMetrics = zeros(totalNumUEs, 1);
 
+            % Determine the number of component carriers and aggregate bandwidth
+            obj.NumCarriers = numel(obj.GNB.ComponentCarrierConfig);
+            obj.Bandwidth(obj.DownlinkIdx) = sum([obj.GNB.ComponentCarrierConfig.ChannelBandwidth]);
+            obj.Bandwidth(obj.UplinkIdx) = sum([obj.GNB.ComponentCarrierConfig.ChannelBandwidth]);
+
             [obj.PeakDataRate(obj.DownlinkIdx), obj.PeakDataRate(obj.UplinkIdx)] = calculatePeakDataRate(obj);
-            obj.Bandwidth(obj.DownlinkIdx) = obj.GNB.ChannelBandwidth;
-            obj.Bandwidth(obj.UplinkIdx) = obj.GNB.ChannelBandwidth;
 
             % Initialize the properties for visualizing the CDF plots
             obj.AvgBLER = [];
@@ -278,7 +296,7 @@ classdef helperNRMetricsVisualizer < handle
 
             if isempty(obj.KPIManager)
                 % Create the hNRKPIManager object
-                obj.KPIManager = hNRKPIManager(Node={obj.GNB,obj.UEs},KPIString=["phy-bler", "app-latency"],LogInterval=logInterval);
+                obj.KPIManager = hNRKPIManager(Node={obj.GNB,obj.UEs},KPIString=["phy-bler", "mac-throughput", "app-latency"],LogInterval=logInterval);
             end
 
             schedulePreSimulationAction(obj.NetworkSimulator, @obj.initLiveMetricPlots, []);
@@ -340,7 +358,11 @@ classdef helperNRMetricsVisualizer < handle
                     'Uplink Scheduler Performance Metrics'};
                 tag = {char('Cell-' + ""+ obj.CellOfInterest + ' DL '), ...
                     char('Cell-' + "" + obj.CellOfInterest + ' UL ')};
-                channelNames = [obj.UELegend(1:numUEs) 'Cell' 'Peak Data Rate' obj.UELegend(1:numUEs) obj.UELegend(1:numUEs) 'Cell' 'Peak Data Rate' obj.UELegend(1:numUEs)];
+                if obj.ShowPeakDataRate
+                    channelNames = [obj.UELegend(1:numUEs) 'Cell' 'SU-MIMO Peak Data Rate' obj.UELegend(1:numUEs) obj.UELegend(1:numUEs) 'Cell' 'SU-MIMO Peak Data Rate' obj.UELegend(1:numUEs)];
+                else
+                    channelNames = [obj.UELegend(1:numUEs) 'Cell' obj.UELegend(1:numUEs) obj.UELegend(1:numUEs) 'Cell' obj.UELegend(1:numUEs)];
+                end
 
                 % Create time scope and add labels
                 for idx=1:numel(obj.PlotIDs)
@@ -351,16 +373,20 @@ classdef helperNRMetricsVisualizer < handle
                     end
 
                     set(obj.MACVisualization{windowId}, 'LayoutDimensions',[2 2], 'ChannelNames', channelNames,...
-                        'ActiveDisplay',1, 'YLabel',[tag{windowId} 'Tx rate (Mbps)'], 'ShowLegend',true,'AxesScaling', 'Updates', ...
-                        'AxesScalingNumUpdates', 1, 'TimeSpanSource', 'property', 'TimeSpan', 1, ...
+                        'ActiveDisplay',1, 'YLabel',[tag{windowId} 'Tx rate (Mbps)'], 'ShowLegend',true,'AxesScaling', 'Auto', ...
+                        'TimeSpanSource', 'property', 'TimeSpan', 1, ...
                         'ActiveDisplay',2, 'YLabel',[tag{windowId} 'Resource Share (%)'], ...
-                        'ShowLegend',true, 'YLimits',[1 100],'AxesScaling', 'Updates','AxesScalingNumUpdates', 1, ...
+                        'ShowLegend',true, 'YLimits',[0 100], ...
                         'SampleRate', obj.RefreshRate, 'TimeSpanSource', 'property', 'TimeSpan', 1, ...
-                        'ActiveDisplay',3, 'YLabel',[tag{windowId} 'Throughput (Mbps)'], 'ShowLegend',true,'AxesScaling', 'Updates', 'AxesScalingNumUpdates', 1, ...
+                        'ActiveDisplay',3, 'YLabel',[tag{windowId} 'Throughput (Mbps)'], 'ShowLegend',true,'AxesScaling', 'Auto', ...
                         'SampleRate', obj.RefreshRate, 'TimeSpanSource', 'property', 'TimeSpan', 1, ...
-                        'ActiveDisplay',4, 'YLabel',[tag{windowId} 'Buffer Status (KB)'], 'ShowLegend',true,'AxesScaling', 'Updates', 'AxesScalingNumUpdates', 1, ...
+                        'ActiveDisplay',4, 'YLabel',[tag{windowId} 'Buffer Status (KB)'], 'ShowLegend',true,'AxesScaling', 'Auto', ...
                         'SampleRate', obj.RefreshRate, 'TimeSpanSource', 'property', 'TimeSpan', 1);
-                    obj.MACVisualization{windowId}([nodeMetrics 0 obj.PeakDataRate(windowId)], nodeMetrics, [nodeMetrics 0 obj.PeakDataRate(windowId)], nodeMetrics);
+                    if obj.ShowPeakDataRate
+                        obj.MACVisualization{windowId}([nodeMetrics 0 obj.PeakDataRate(windowId)], nodeMetrics, [nodeMetrics 0 obj.PeakDataRate(windowId)], nodeMetrics);
+                    else
+                        obj.MACVisualization{windowId}([nodeMetrics 0], nodeMetrics, [nodeMetrics 0], nodeMetrics);
+                    end
                 end
             end
         end
@@ -409,16 +435,21 @@ classdef helperNRMetricsVisualizer < handle
         function plotLiveMetrics(obj, ~, ~)
             %plotLiveMetrics Updates the metric plots by querying from nodes
 
+            startTime = obj.LastMetricsUpdateTime;
+            endTime = obj.NetworkSimulator.CurrentTime;
+            stepDuration = (endTime - startTime) * 1000; % In ms
+            obj.LastMetricsUpdateTime = endTime;
+
             % RLC metrics visualization
             if ~isempty(obj.RLCVisualization)
-                plotLiveRLCMetrics(obj);
+                plotLiveRLCMetrics(obj, stepDuration);
             end
 
             % MAC metrics visualization
-            plotLiveMACMetrics(obj);
+            plotLiveMACMetrics(obj, startTime, endTime, stepDuration);
 
             % PHY metrics visualization
-            plotLivePhyMetrics(obj);
+            plotLivePhyMetrics(obj, startTime, endTime);
         end
 
         function plotRemLiveMetrics(obj, varargin)
@@ -443,11 +474,11 @@ classdef helperNRMetricsVisualizer < handle
 
             currTime = obj.NetworkSimulator.CurrentTime; % Simulation time (in seconds)
             if ismember(obj.UplinkIdx, obj.PlotIDs) % Uplink stats
-                ulThroughput = (obj.MACRxBytes(:, obj.UplinkIdx) .* 8) ./ (currTime * 1000 * 1000); % Mbps
+                ulThroughputPerUE = kpi(obj.KPIManager, obj.UEs, obj.GNB, "mac-throughput", StartTime=0, EndTime=currTime); % Mbps
                 ulPeakSpectralEfficiency = 1e6*obj.PeakDataRate(obj.UplinkIdx)/obj.Bandwidth(obj.UplinkIdx);
-                ulAchSpectralEfficiency = 1e6*sum(ulThroughput)/obj.Bandwidth(obj.UplinkIdx);
-                fprintf("Peak UL throughput: %0.2f Mbps\nAchieved cell UL throughput: %0.2f Mbps\n", obj.PeakDataRate(obj.UplinkIdx), sum(ulThroughput));
-                fprintf(['Achieved UL throughput for each UE: [' num2str(round(ulThroughput, 2)') ']']);
+                ulAchSpectralEfficiency = 1e6*sum(ulThroughputPerUE)/obj.Bandwidth(obj.UplinkIdx);
+                fprintf("Peak UL throughput: %0.2f Mbps\nAchieved cell UL throughput: %0.2f Mbps\n", obj.PeakDataRate(obj.UplinkIdx), sum(ulThroughputPerUE));
+                fprintf(['Achieved UL throughput for each UE: [' num2str(round(ulThroughputPerUE, 2)) ']']);
                 fprintf("\nPeak UL spectral efficiency: %0.2f bits/s/Hz\nAchieved UL spectral efficiency for cell: %0.2f bits/s/Hz \n", ulPeakSpectralEfficiency, ulAchSpectralEfficiency);
 
                 ulBLER = obj.ULBLERInfo(:, 1) ./ obj.ULBLERInfo(:, 2);
@@ -456,11 +487,11 @@ classdef helperNRMetricsVisualizer < handle
             end
 
             if ismember(obj.DownlinkIdx, obj.PlotIDs) % Downlink stats
-                dlThroughput = (obj.MACRxBytes(:, obj.DownlinkIdx) .* 8) ./ (currTime * 1000 * 1000); % Mbps
+                dlThroughputPerUE = kpi(obj.KPIManager, obj.GNB, obj.UEs, "mac-throughput", StartTime=0, EndTime=currTime); % Mbps
                 dlPeakSpectralEfficiency = 1e6*obj.PeakDataRate(obj.DownlinkIdx)/obj.Bandwidth(obj.DownlinkIdx);
-                dlAchSpectralEfficiency = 1e6*sum(dlThroughput)/obj.Bandwidth(obj.DownlinkIdx);
-                fprintf("Peak DL throughput: %0.2f Mbps\nAchieved cell DL throughput: %0.2f Mbps\n", obj.PeakDataRate(obj.DownlinkIdx), sum(dlThroughput));
-                fprintf(['Achieved DL throughput for each UE: [' num2str(round(dlThroughput, 2)') ']']);
+                dlAchSpectralEfficiency = 1e6*sum(dlThroughputPerUE)/obj.Bandwidth(obj.DownlinkIdx);
+                fprintf("Peak DL throughput: %0.2f Mbps\nAchieved cell DL throughput: %0.2f Mbps\n", obj.PeakDataRate(obj.DownlinkIdx), sum(dlThroughputPerUE));
+                fprintf(['Achieved DL throughput for each UE: [' num2str(round(dlThroughputPerUE, 2)) ']']);
                 fprintf("\nPeak DL spectral efficiency: %0.2f bits/s/Hz\nAchieved DL spectral efficiency for cell: %0.2f bits/s/Hz\n", dlPeakSpectralEfficiency, dlAchSpectralEfficiency);
 
                 dlBLER = obj.DLBLERInfo(:, 1) ./ obj.DLBLERInfo(:, 2);
@@ -471,47 +502,69 @@ classdef helperNRMetricsVisualizer < handle
 
         function [dlPeakDataRate, ulPeakDataRate] = calculatePeakDataRate(obj)
             %calculatePeakDataRate Calculate the theoretical peak data rate value
+            %   For carrier aggregation, the aggregate peak data rate is the sum
+            %   of per-carrier peak data rates. Each carrier may have a different
+            %   SCS, NRB, and TDD configuration, so the peak rate is computed
+            %   independently per carrier and then summed.
 
             % Peak data rate is calculated as per 3GPP TR 37.910 which defines it as
             % the received data bits assuming error free conditions assignable to a
             % single mobile station, when all assignable radio resources for the
             % corresponding link direction are utilized.
             gNB = obj.GNB;
-            scs = gNB.SubcarrierSpacing/1e3;
+            % Assume same SCS and duplex mode for all the carriers
+            scs = gNB.ComponentCarrierConfig(1).SubcarrierSpacing/1e3;
             % Symbol duration for the given numerology
             symbolDuration = 1e-3/(14*(scs/15)); % Assuming normal cyclic prefix
+            duplexMode = gNB.ComponentCarrierConfig(1).DuplexMode;
 
-            % Maximum number of transmission layers assuming all the resources are assigned to the UE.
+            % Maximum number of transmission layers assuming all the resources are assigned to the UE
             numLayersDL = min(gNB.NumTransmitAntennas, max([obj.UEs.NumReceiveAntennas]));
             numLayersUL = min(gNB.NumReceiveAntennas, max([obj.UEs.NumTransmitAntennas]));
 
-            if strcmp(gNB.DuplexMode, "TDD")
-                tddConfig = gNB.DLULConfigTDD;
-                % Number of DL symbols in one DL-UL pattern
-                numDLSymbols = tddConfig.NumDLSlots*14 + tddConfig.NumDLSymbols;
-                % Number of UL symbols in one DL-UL pattern
-                numULSymbols = tddConfig.NumULSlots*14 + tddConfig.NumULSymbols;
-                % Number of symbols in one DL-UL pattern
-                numSymbols = tddConfig.DLULPeriodicity*(scs/15)*14;
-                % Normalized scalar considering the downlink symbol
-                % allocation in the frame structure
-                scaleFactorDL = numDLSymbols/numSymbols;
-                % Normalized scalar considering the uplink symbol allocation
-                % in the frame structure
-                scaleFactorUL = numULSymbols/numSymbols;
-            else % FDD
-                % Normalized scalars in the DL and UL directions are 1 for
-                % FDD mode
-                scaleFactorDL = 1;
-                scaleFactorUL = 1;
-            end
+            dlPeakDataRate = 0;
+            ulPeakDataRate = 0;
 
-            % Calculate uplink and downlink peak data rates as per 3GPP TS 37.910. The
-            % maximum layers possible for a UE in DL direction is min(gNBTxAnts, ueRxAnts).
-            % For UL direction, it is min(UETxAnts, gNBRxAnts).
-            % The peak DL, UL throughput values for each UE
-            dlPeakDataRate = 1e-6*numLayersDL*scaleFactorDL*8*(948/1024)*(gNB.NumResourceBlocks*12)/symbolDuration;
-            ulPeakDataRate = 1e-6*numLayersUL*scaleFactorUL*8*(948/1024)*(gNB.NumResourceBlocks*12)/symbolDuration;
+            % Compute peak data rate per component carrier and accumulate
+            for ccIdx = 1:obj.NumCarriers
+                if obj.NumCarriers > 1
+                    ccConfig = gNB.ComponentCarrierConfig(ccIdx);
+                    ccNRB = ccConfig.NumResourceBlocks;
+                else
+                    ccNRB = gNB.NumResourceBlocks;
+                end
+
+                % Determine DL/UL scale factors based on duplex mode
+                if strcmp(duplexMode, "TDD")
+                    if obj.NumCarriers > 1
+                        tddConfig = ccConfig.DLULConfigTDD;
+                    else
+                        tddConfig = gNB.DLULConfigTDD;
+                    end
+                    % Number of DL symbols in one DL-UL pattern
+                    numDLSymbols = tddConfig.NumDLSlots*14 + tddConfig.NumDLSymbols;
+                    % Number of UL symbols in one DL-UL pattern
+                    numULSymbols = tddConfig.NumULSlots*14 + tddConfig.NumULSymbols;
+                    % Number of symbols in one DL-UL pattern
+                    numSymbols = tddConfig.DLULPeriodicity*(scs/15)*14;
+                    scaleFactorDL = numDLSymbols/numSymbols;
+                    scaleFactorUL = numULSymbols/numSymbols;
+                else % FDD
+                    scaleFactorDL = 1;
+                    scaleFactorUL = 1;
+                end
+
+                % Calculate uplink and downlink peak data rates as per 3GPP TS 37.910. The
+                % maximum layers possible for a UE in DL direction is min(gNBTxAnts, ueRxAnts).
+                % For UL direction, it is min(UETxAnts, gNBRxAnts).
+                % The peak DL, UL throughput values for each UE
+                ccDLPeak = 1e-6*numLayersDL*scaleFactorDL*8*(948/1024)*(ccNRB*12)/symbolDuration;
+                ccULPeak = 1e-6*numLayersUL*scaleFactorUL*8*(948/1024)*(ccNRB*12)/symbolDuration;
+
+                % Aggregate across carriers
+                dlPeakDataRate = dlPeakDataRate + ccDLPeak;
+                ulPeakDataRate = ulPeakDataRate + ccULPeak;
+            end
         end
 
         function metrics = getMetrics(obj)
@@ -568,7 +621,7 @@ classdef helperNRMetricsVisualizer < handle
     end
 
     methods(Access = private)
-        function plotLiveRLCMetrics(obj)
+        function plotLiveRLCMetrics(obj, stepDuration)
             %plotLiveRLCMetrics Plots the RLC live metrics
 
             ueList = obj.UEs;
@@ -583,7 +636,7 @@ classdef helperNRMetricsVisualizer < handle
                 for idx = 1:numUEs
                     rnti = ueList(idx).RNTI;
                     dlTxBytes(idx) = gNBRLCStats(rnti).TransmittedBytes;
-                    txRate(idx, 1) = ((dlTxBytes(idx) - obj.DLRLCMetrics(idx))* 8) / (obj.MetricsStepDuration * 1000);
+                    txRate(idx, 1) = ((dlTxBytes(idx) - obj.DLRLCMetrics(idx))* 8) / (stepDuration * 1000);
                     obj.DLRLCMetrics(idx) = dlTxBytes(idx);
                 end
             end
@@ -592,14 +645,14 @@ classdef helperNRMetricsVisualizer < handle
                 for idx = 1:numUEs
                     ueStats = statistics(ueList(idx));
                     ulTxBytes(idx) = ueStats.RLC.TransmittedBytes;
-                    txRate(idx, 2) = ((ulTxBytes(idx) - obj.ULRLCMetrics(idx))* 8) / (obj.MetricsStepDuration * 1000);
+                    txRate(idx, 2) = ((ulTxBytes(idx) - obj.ULRLCMetrics(idx))* 8) / (stepDuration * 1000);
                     obj.ULRLCMetrics(idx) = ulTxBytes(idx);
                 end
             end
             updateRLCMetrics(obj, txRate);
         end
 
-        function plotLiveMACMetrics(obj)
+        function plotLiveMACMetrics(obj, startTime, endTime, stepDuration)
             %plotLiveMACMetrics Plots the MAC live metrics
 
             ueList = obj.UEs;
@@ -608,14 +661,20 @@ classdef helperNRMetricsVisualizer < handle
             throughput = zeros(numUEs, 2);
             bufferstatus = zeros(numUEs, 2);
             resourceshare = zeros(numUEs, 2);
-            cellTxRate = zeros(2, 2);
-            cellThroughputMetrics = zeros(2, 2);
+            if obj.ShowPeakDataRate
+                cellTxRate = zeros(2, 2);
+                cellThroughputMetrics = zeros(2, 2);
+            else
+                cellTxRate = zeros(1, 2);
+                cellThroughputMetrics = zeros(1, 2);
+            end
             gNBMACStats = statistics(obj.GNB, "all").MAC.Destinations;
             if obj.LinkDirectionIdx ~= 0 % Uplink
                 for ueIdx = 1:numUEs
                     rnti = ueList(ueIdx).RNTI;
                     gNBRxBytes = gNBMACStats(rnti).ReceivedBytes;
-                    throughput(ueIdx, obj.UplinkIdx) = (gNBRxBytes - obj.MACRxBytes(ueIdx, obj.UplinkIdx))* 8 / (obj.MetricsStepDuration * 1000); % In Mbps
+                    throughput(ueIdx, obj.UplinkIdx) = kpi(obj.KPIManager, ueList(ueIdx), obj.GNB, "mac-throughput", ...
+                        StartTime=startTime, EndTime=endTime); % In Mbps
                     obj.MACRxBytes(ueIdx, obj.UplinkIdx) = gNBRxBytes;
 
                     ueMACStats = statistics(ueList(ueIdx)).MAC;
@@ -623,7 +682,7 @@ classdef helperNRMetricsVisualizer < handle
                     totalNumRBs = ueMACStats.ULTransmissionRB + ueMACStats.ULRetransmissionRB;
 
                     % Instant metrics calculation
-                    txRate(ueIdx, obj.UplinkIdx) = (txBytes - obj.MACTxBytes(ueIdx, obj.UplinkIdx))* 8 / (obj.MetricsStepDuration * 1000); % In Mbps
+                    txRate(ueIdx, obj.UplinkIdx) = (txBytes - obj.MACTxBytes(ueIdx, obj.UplinkIdx))* 8 / (stepDuration * 1000); % In Mbps
                     resourceshare(ueIdx, obj.UplinkIdx) =  totalNumRBs - obj.ResourceShareMetrics(ueIdx, obj.UplinkIdx);
                     ueMAC = ueList(ueIdx).MACEntity;
                     bufferSize = sum(ueMAC.LCGBufferStatus);
@@ -635,20 +694,26 @@ classdef helperNRMetricsVisualizer < handle
                 end
 
                 % Cell level metrics
+                cellThroughputMetrics(1, obj.UplinkIdx) = kpi(obj.KPIManager, obj.GNB, [], "mac-throughput", ...
+                    StartTime=startTime, EndTime=endTime, LinkType="UL"); % Cell throughput
+                if obj.ShowPeakDataRate
+                    cellThroughputMetrics(2, obj.UplinkIdx) = obj.PeakDataRate(obj.UplinkIdx); % Peak data rate
+                end
                 numRBScheduled = sum(resourceshare(:, obj.UplinkIdx));
                 resourceshare(:, obj.UplinkIdx) = ((resourceshare(:, obj.UplinkIdx) ./ numRBScheduled) * 100); % Percent share
                 cellTxRate(1, obj.UplinkIdx) = sum(txRate(:, obj.UplinkIdx)); % Cell Tx rate
-                cellTxRate(2, obj.UplinkIdx) = obj.PeakDataRate(obj.UplinkIdx); % Peak datarate
-                cellThroughputMetrics(1, obj.UplinkIdx) = sum(throughput(:, obj.UplinkIdx)); % Cell throughput
-                cellThroughputMetrics(2, obj.UplinkIdx) = obj.PeakDataRate(obj.UplinkIdx); % Peak datarate
+                if obj.ShowPeakDataRate
+                    cellTxRate(2, obj.UplinkIdx) = obj.PeakDataRate(obj.UplinkIdx); % Peak data rate
+                end
             end
 
             gNBMAC = obj.GNB.MACEntity;
             bufferSize = sum(gNBMAC.LCHBufferStatus,2);
             if obj.LinkDirectionIdx ~= 1 % Downlink
                 for ueIdx = 1:numUEs
+                    throughput(ueIdx, obj.DownlinkIdx) = kpi(obj.KPIManager, obj.GNB, ueList(ueIdx), "mac-throughput", ...
+                        StartTime=startTime, EndTime=endTime); % In Mbps
                     ueMACStats = statistics(ueList(ueIdx)).MAC;
-                    throughput(ueIdx, obj.DownlinkIdx) = (ueMACStats.ReceivedBytes - obj.MACRxBytes(ueIdx, obj.DownlinkIdx))* 8 / (obj.MetricsStepDuration * 1000); % In Mbps
                     obj.MACRxBytes(ueIdx, obj.DownlinkIdx) = ueMACStats.ReceivedBytes;
                     totalNumRBs = ueMACStats.DLTransmissionRB + ueMACStats.DLRetransmissionRB;
                     resourceshare(ueIdx, obj.DownlinkIdx) = totalNumRBs - obj.ResourceShareMetrics(ueIdx, obj.DownlinkIdx);
@@ -657,7 +722,7 @@ classdef helperNRMetricsVisualizer < handle
                     % Instant metrics calculation
                     rnti = ueList(ueIdx).RNTI;
                     txBytes = gNBMACStats(rnti).TransmittedBytes + gNBMACStats(rnti).RetransmissionBytes;
-                    txRate(ueIdx, obj.DownlinkIdx) = (txBytes - obj.MACTxBytes(ueIdx, obj.DownlinkIdx))* 8 / (obj.MetricsStepDuration * 1000); % In Mbps
+                    txRate(ueIdx, obj.DownlinkIdx) = (txBytes - obj.MACTxBytes(ueIdx, obj.DownlinkIdx))* 8 / (stepDuration * 1000); % In Mbps
                     bufferstatus(ueIdx, obj.DownlinkIdx) = bufferSize(rnti) ./ 1000; % In KB
 
                     % Save the previous metrics
@@ -665,12 +730,17 @@ classdef helperNRMetricsVisualizer < handle
                 end
 
                 % Cell level metrics
+                cellThroughputMetrics(1, obj.DownlinkIdx) = kpi(obj.KPIManager, obj.GNB, [], "mac-throughput", ...
+                    StartTime=startTime, EndTime=endTime, LinkType="DL"); % Cell throughput in Mbps
+                if obj.ShowPeakDataRate
+                    cellThroughputMetrics(2, obj.DownlinkIdx) = obj.PeakDataRate(obj.DownlinkIdx); % Peak data rate
+                end
                 numRBScheduled = sum(resourceshare(:, obj.DownlinkIdx));
                 resourceshare(:, obj.DownlinkIdx) = (resourceshare(:, obj.DownlinkIdx) ./ numRBScheduled) * 100;
                 cellTxRate(1, obj.DownlinkIdx) = sum(txRate(:, obj.DownlinkIdx)); % Cell Tx rate
-                cellTxRate(2, obj.DownlinkIdx) = obj.PeakDataRate(obj.DownlinkIdx); % Peak datarate
-                cellThroughputMetrics(1, obj.DownlinkIdx) = sum(throughput(:, obj.DownlinkIdx)); % Cell throughput
-                cellThroughputMetrics(2, obj.DownlinkIdx) = obj.PeakDataRate(obj.DownlinkIdx); % Peak datarate
+                if obj.ShowPeakDataRate
+                    cellTxRate(2, obj.DownlinkIdx) = obj.PeakDataRate(obj.DownlinkIdx); % Peak data rate
+                end
             end
 
             txRate = [txRate; cellTxRate];
@@ -684,7 +754,7 @@ classdef helperNRMetricsVisualizer < handle
             end
         end
 
-        function plotLivePhyMetrics(obj)
+        function plotLivePhyMetrics(obj, startTime, endTime)
             %plotLivePhyMetrics Plots the Phy live metrics
 
             ueList = obj.UEs;
@@ -692,8 +762,6 @@ classdef helperNRMetricsVisualizer < handle
             blerData = zeros(numUEs, 2);
             dlBLERInfo = zeros(numUEs, 2);
             ulBLERInfo = zeros(numUEs, 2);
-            startTimeForKPICal = max(0, round(obj.NetworkSimulator.CurrentTime - obj.RefreshInterval, 9));
-            endTimeForKPICal = obj.NetworkSimulator.CurrentTime;
 
             if obj.LinkDirectionIdx ~= 1 % Downlink
                 for idx = 1:numUEs
@@ -701,7 +769,7 @@ classdef helperNRMetricsVisualizer < handle
                     dlBLERInfo(idx, :) = [uePHYStats.DecodeFailures uePHYStats.ReceivedPackets];
                 end
                 blerData(:, obj.DownlinkIdx) = kpi(obj.KPIManager, obj.GNB, obj.UEs, "phy-bler", ...
-                    StartTime=startTimeForKPICal, EndTime=endTimeForKPICal,LinkType="DL");
+                    StartTime=startTime, EndTime=endTime,LinkType="DL");
                 obj.DLBLERInfo = dlBLERInfo;
             end
 
@@ -712,16 +780,16 @@ classdef helperNRMetricsVisualizer < handle
                     ulBLERInfo(idx, :) = [gNBPHYStats(rnti).DecodeFailures gNBPHYStats(rnti).ReceivedPackets];
                 end
                 blerData(:, obj.UplinkIdx) = kpi(obj.KPIManager, obj.UEs, obj.GNB, "phy-bler", ...
-                    StartTime=startTimeForKPICal, EndTime=endTimeForKPICal, LinkType="UL");
+                    StartTime=startTime, EndTime=endTime, LinkType="UL");
                 obj.ULBLERInfo = ulBLERInfo;
             end
             blerData = blerData';
 
             % Calculate average BLER in the uplink and downlink directions
             avgBLERDL = kpi(obj.KPIManager, obj.GNB, [], "phy-bler", ...
-                StartTime=startTimeForKPICal, EndTime=endTimeForKPICal, LinkType="DL");
+                StartTime=startTime, EndTime=endTime, LinkType="DL");
             avgBLERUL = kpi(obj.KPIManager, obj.GNB, [], "phy-bler", ...
-                StartTime=startTimeForKPICal, EndTime=endTimeForKPICal, LinkType="UL");
+                StartTime=startTime, EndTime=endTime, LinkType="UL");
             % Append BLER values to the AvgBLER array
             obj.AvgBLER = [obj.AvgBLER; avgBLERDL, avgBLERUL];
 
@@ -733,8 +801,9 @@ classdef helperNRMetricsVisualizer < handle
         function calculateLatency(obj, ~, ~)
             %calculateLatency Calculate the average application layer latency
 
-            startTimeForKPICal = max(0, round(obj.NetworkSimulator.CurrentTime - obj.RefreshInterval, 9));
-            endTimeForKPICal = obj.NetworkSimulator.CurrentTime;
+            startTime = obj.LastLatencyUpdateTime;
+            endTime = obj.NetworkSimulator.CurrentTime;
+            obj.LastLatencyUpdateTime = endTime;
             numUEs = obj.NumUEs;
             dlLatency = zeros(numUEs, 1);
             ulLatency = zeros(numUEs, 1);
@@ -742,11 +811,11 @@ classdef helperNRMetricsVisualizer < handle
             % Get the average application layer latency
             if obj.LinkDirectionIdx ~= 1 % Downlink
                 dlLatency = kpi(obj.KPIManager, obj.GNB, obj.UEs, "app-latency", ...
-                    StartTime=startTimeForKPICal, EndTime=endTimeForKPICal);
+                    StartTime=startTime, EndTime=endTime);
             end
             if obj.LinkDirectionIdx ~= 0 % Uplink
                 ulLatency = kpi(obj.KPIManager, obj.UEs, obj.GNB, "app-latency", ...
-                    StartTime=startTimeForKPICal, EndTime=endTimeForKPICal);
+                    StartTime=startTime, EndTime=endTime);
             end
 
             % Calculate average latency in the uplink and downlink directions
@@ -794,7 +863,11 @@ classdef helperNRMetricsVisualizer < handle
 
             % Determine the maximum UEs to plot the metrics
             numUEs = obj.NumUEs; % Number of UEs
-            cellLevelMetricsIdx = [numUEs+1 numUEs+2];
+            if obj.ShowPeakDataRate
+                cellLevelMetricsIdx = [numUEs+1 numUEs+2];
+            else
+                cellLevelMetricsIdx = numUEs+1;
+            end
             if numUEs > obj.MaxMetricLinesPerSubPlot
                 numUEs = obj.MaxMetricLinesPerSubPlot;
             end
@@ -891,162 +964,74 @@ classdef helperNRMetricsVisualizer < handle
         function plotPHYCDF(obj, varargin)
             %plotPHYCDF Plot CDF plots for the BLER
 
-            % Create the visualization for BLER CDF plots
-            titles = {'Average Cell DL BLER', 'Average Cell UL BLER'};
-            obj.PHYCDFVisualizationFigHandle = uifigure('Name', 'ECDF of Block Error Rate (BLER)', 'HandleVisibility', 'on');
-            % Use desktop theme to support dark theme mode
-            matlab.graphics.internal.themes.figureUseDesktopTheme(obj.PHYCDFVisualizationFigHandle);
-            subPlotAxes = createCDFVisualization(obj, obj.PHYCDFVisualizationFigHandle);
-
-            for idx=1:numel(obj.PlotIDs)
-                ax = subPlotAxes{idx};
-                if obj.LinkDirectionIdx == 1 % Only uplink visualization is on
-                    idx = 2;
-                end
-                data = obj.AvgBLER(:,idx);
-                data(isnan(data)) = []; % To handle NaN
-
-                if isempty(data)
-                    % Delete the axis, if no data to plot
-                    delete(ax);
-                    if ~all(isvalid([subPlotAxes{:}]))
-                        % Delete the figure
-                        delete(obj.PHYCDFVisualizationFigHandle);
-                    end
-                else
-                    % Call local function to calculate and plot ecdf
-                    calculateAndPlotECDF(ax, data, titles{idx}, 'Average BLER', 'BLER');
-                end
+            allTitles = ["Average Cell DL BLER" "Average Cell UL BLER"];
+            nPlots = numel(obj.PlotIDs);
+            dataIdxs = 1:nPlots;
+            if obj.LinkDirectionIdx == 1
+                dataIdxs(:) = 2;
             end
+            ax = helperPlotECDF(obj.AvgBLER(:, dataIdxs), ...
+                Title=allTitles(dataIdxs), ...
+                XLabel="BLER", ...
+                Legend="Average BLER", ...
+                XLimit=[0 1], ...
+                Percentile=[5 95]);
+            obj.PHYCDFVisualizationFigHandle = ancestor(ax(1),'figure');
+            obj.PHYCDFVisualizationFigHandle.Name = "ECDF of Block Error Rate (BLER)";
         end
 
         function plotMACCDF(obj, varargin)
             %plotMACCDF Plot CDF plots for the cell throughput and average user throughput
 
-            % Create the visualization for cell throughput CDF plots
-            titles = {'Cell DL Throughput', 'Cell UL Throughput'};
-            obj.MACCDFVisualizationFigHandle = uifigure('Name', 'ECDF of Cell Throughput', 'HandleVisibility', 'on');
-            % Use desktop theme to support dark theme mode
-            matlab.graphics.internal.themes.figureUseDesktopTheme(obj.MACCDFVisualizationFigHandle);
-            subPlotAxes = createCDFVisualization(obj, obj.MACCDFVisualizationFigHandle);
-
-            for idx=1:numel(obj.PlotIDs)
-                ax = subPlotAxes{idx};
-                if obj.LinkDirectionIdx == 1 % Only uplink visualization is on
-                    idx = 2;
-                end
-                data = obj.CellThroughput(:,idx);
-
-                if isempty(data)
-                    % Delete the axis, if no data to plot
-                    delete(ax);
-                    if ~all(isvalid([subPlotAxes{:}]))
-                        % Delete the figure
-                        delete(obj.MACCDFVisualizationFigHandle);
-                    end
-                else
-                    % Call local function to calculate and plot ecdf
-                    calculateAndPlotECDF(ax, data, titles{idx}, 'Cell Throughput', 'Cell Throughput (Mbps)');
-                end
+            allTitles = ["Cell DL Throughput" "Cell UL Throughput"];
+            nPlots = numel(obj.PlotIDs);
+            dataIdxs = 1:nPlots;
+            if obj.LinkDirectionIdx == 1
+                dataIdxs(:) = 2;
             end
+            ax = helperPlotECDF(obj.CellThroughput(:, dataIdxs), ...
+                Title=allTitles(dataIdxs), ...
+                XLabel="Cell Throughput (Mbps)", ...
+                Legend="Cell Throughput", ...
+                Percentile=[5 95]);
+            obj.MACCDFVisualizationFigHandle = ancestor(ax(1),'figure');
+            obj.MACCDFVisualizationFigHandle.Name = "ECDF of Cell Throughput";
         end
 
         function plotAppCDF(obj, varargin)
             %plotAppCDF Plot CDF plots for the average application layer latency
 
-            % Create the visualization for BLER CDF plots
-            titles = {'Average App DL Latency', 'Average App UL Latency'};
-            obj.AppCDFVisualizationFigHandle = uifigure('Name', 'ECDF of Application Layer Latency', 'HandleVisibility', 'on');
-            % Use desktop theme to support dark theme mode
-            matlab.graphics.internal.themes.figureUseDesktopTheme(obj.AppCDFVisualizationFigHandle);
-            subPlotAxes = createCDFVisualization(obj, obj.AppCDFVisualizationFigHandle);
-
-            for idx=1:numel(obj.PlotIDs)
-                ax = subPlotAxes{idx};
-                if obj.LinkDirectionIdx == 1 % Only uplink visualization is on
-                    idx = 2;
-                end
-                data = obj.AvgAppLatency(:,idx);
-                data(isnan(data)) = []; % To handle NaN
-
-                if isempty(data)
-                    % Delete the axis, if no data to plot
-                    delete(ax);
-                    if ~all(isvalid([subPlotAxes{:}]))
-                         % Delete the figure
-                        delete(obj.AppCDFVisualizationFigHandle);  
-                    end
-                else
-                    % Call local function to calculate and plot ecdf
-                    calculateAndPlotECDF(ax, data, titles{idx}, 'Average Latency', 'Latency (s)');
-                end
+            allTitles = ["Average App DL Latency" "Average App UL Latency"];
+            nPlots = numel(obj.PlotIDs);
+            dataIdxs = 1:nPlots;
+            if obj.LinkDirectionIdx == 1
+                dataIdxs(:) = 2;
             end
-        end
-
-        function subPlotAxes = createCDFVisualization(obj, figureHandle)
-            %createCDFVisualization Create visualization for a figure
-
-            g = uigridlayout(figureHandle);
-            g.RowHeight = {'1x'};
-            g.ColumnWidth = {'1x'};
-            panel = uipanel(g);
-            panel.AutoResizeChildren = 'off';
-            panel.BorderType = 'none';
-            % Create subplot based on the PlotIDs
-            subPlotAxes = cell(1,1);
-            for idx=1:numel(obj.PlotIDs)
-                subPlotAxes{idx} = subplot(numel(obj.PlotIDs),1,idx,'Parent', panel);
-            end
+            ax = helperPlotECDF(obj.AvgAppLatency(:, dataIdxs), ...
+                Title=allTitles(dataIdxs), ...
+                XLabel="Latency (s)", ...
+                Legend="Average Latency", ...
+                Percentile=[5 95]);
+            obj.AppCDFVisualizationFigHandle = ancestor(ax(1),'figure');
+            obj.AppCDFVisualizationFigHandle.Name = "ECDF of Application Layer Latency";
         end
 
 
         function updateTimescope(obj, varargin)
             %updateTimescope Adjust timescopes at the end of simulation
+            simTime = obj.NetworkSimulator.CurrentTime;
             if obj.PlotPhyMetrics
-                obj.PhyVisualization.TimeSpan = obj.NetworkSimulator.CurrentTime;
-                obj.PhyVisualization.release();
+                obj.PhyVisualization.TimeSpan = simTime;
             end
             if obj.PlotSchedulerMetrics
                 for plotIdx = 1:numel(obj.PlotIDs)
                     plotId = obj.PlotIDs(plotIdx);
-                    obj.MACVisualization{plotId}.TimeSpan = obj.NetworkSimulator.CurrentTime;
-                    obj.MACVisualization{plotId}.release();
+                    obj.MACVisualization{plotId}.TimeSpan = simTime;
                 end
             end
             if obj.PlotRLCMetrics
-                obj.RLCVisualization.TimeSpan = obj.NetworkSimulator.CurrentTime;
-                obj.RLCVisualization.release();
+                obj.RLCVisualization.TimeSpan = simTime;
             end
         end
     end
-end
-
-function calculateAndPlotECDF(ax, data, figureTitle, legendName, xLabel)
-%calculateAndPlotECDF Calculate and plot ecdf for data
-
-dataLen = numel(data);
-% Calculate the empirical cumulative distribution function F, evaluated at x,
-% using the data
-[x, F] = stairs(sort(data),(1:dataLen)/dataLen);
-% Include a starting value, required for accurate plot
-x = [x(1); x];
-F = [0; F];
-
-% Plot the estimated empirical cdf
-axes(ax);
-plot(x,F);
-% Plot a horizontal line corresponding to 5th and 95th percentile points in the
-% CDF plot
-points = [5 95];
-yline(points/100,'--');
-
-title(figureTitle);
-ax.YTick = 0:0.1:1;
-xlabel(xLabel);
-ylabel('ECDF');
-legend(legendName,'Location','best');
-grid on;
-if isequal(xLabel,'BLER') % Set x-axis limit for BLER metric plots
-    ax.XLim = [0 1];
-end
 end

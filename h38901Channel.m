@@ -452,12 +452,16 @@ classdef h38901Channel < handle
         % [CHANNEL,CHINFO] = createChannelLink(CHCFG) creates a single 
         % channel link for channel link configuration structure CHCFG.
 
-            if (isfield(chcfg,'SpatialConsistency'))
-                chcfg.SpatialConsistency = spatialConsistencyString(chcfg.SpatialConsistency);
+            if (nargin==0)
+                [channel,chinfo] = nr5g.internal.channel38901.createChannelLink();
+            else
+                if (isfield(chcfg,'SpatialConsistency'))
+                    chcfg.SpatialConsistency = spatialConsistencyString(chcfg.SpatialConsistency);
+                end
+                SCRVs = manageSCRVs();
+                [channel,chinfo,SCRVs] = nr5g.internal.channel38901.createChannelLink(chcfg,SCRVs);
+                manageSCRVs(SCRVs);
             end
-            SCRVs = manageSCRVs();
-            [channel,chinfo,SCRVs] = nr5g.internal.channel38901.createChannelLink(chcfg,SCRVs);
-            manageSCRVs(SCRVs);
 
         end
 
@@ -838,6 +842,7 @@ function [channel,isUplink,linkind] = createSLSChannelLink(obj,linkID,packet,isU
     chcfg.NumReceiveAntennas = Nr;
     if (isnan(isUplink))
         % BS-to-BS or UE-to-UE link
+        chcfg = configureAntennaArrays(chcfg, isUplink, f.Node, r.Node);
         chcfg.BSPosition = f.Node.Position;
         chcfg.UEPosition = r.Node.Position;
         chcfg.SampleRate = f.OFDMInfo.SampleRate;
@@ -859,14 +864,28 @@ function [channel,isUplink,linkind] = createSLSChannelLink(obj,linkID,packet,isU
         end
     else
         % BS-to-UE or UE-to-BS link
-        chcfg.SampleRate = BS.OFDMInfo.SampleRate;
+        chcfg = configureAntennaArrays(chcfg, isUplink, BS.Node, UE.Node);
         chcfg.TXRUVirtualization = BS.TXRUVirtualization;
-        chcfg.TransmitArrayOrientation = BS.TransmitArrayOrientation;
+        K = chcfg.TXRUVirtualization.K;
+        L = chcfg.TXRUVirtualization.L;
+        if (K > 1 || L > 1)
+            chcfg = rmfield(chcfg,'TransmitAntennaArray');
+        end
+        chcfg.SampleRate = BS.OFDMInfo.SampleRate;
         chcfg.BSPosition = BS.Node.Position;
         chcfg.UEPosition = UE.Node.Position;
         chcfg.n_fl = UE.n_fl;
         chcfg.d_2D_in = UE.d_2D_in;
-        chcfg.ReceiveArrayOrientation = UE.ReceiveArrayOrientation;
+
+        % Supports when gNB has different Tx/Rx orientations.
+        % Channel models BS->UE internally; for UL swap Tx/Rx directions.
+        if (isUplink)
+            chcfg.TransmitArrayOrientation = BS.Node.ReceiveArrayOrientation;
+            chcfg.ReceiveArrayOrientation = UE.Node.TransmitArrayOrientation;
+        else
+            chcfg.TransmitArrayOrientation = BS.TransmitArrayOrientation;
+            chcfg.ReceiveArrayOrientation = UE.ReceiveArrayOrientation;
+        end
     end
     chcfg.CenterFrequency = packet.CenterFrequency;
     chcfg.Wrapping = obj.theScenarioInfo.Wrapping;
@@ -1174,7 +1193,13 @@ function recordNodes(obj,sls,cfg)
         ofdmInfo = nrOFDMInfo(bs.NumResourceBlocks,bs.SubcarrierSpacing/1e3);
 
         virt = getFieldColumnOrDefault(chCfg,"TXRUVirtualization",i,struct(K=1,Tilt=0,L=1,Pan=0));
+        if isequal(virt, struct(K=1,Tilt=0,L=1,Pan=0)) && ~isempty(nodeinfo) && isfield(nodeinfo,'TXRUVirtualization')
+            virt = nodeinfo.TXRUVirtualization;
+        end
         txorientation = getFieldColumnOrDefault(chCfg,"TransmitArrayOrientation",i,[]);
+        if isempty(txorientation) && ~isequal(bs.TransmitArrayOrientation, [0;0;0])
+            txorientation = bs.TransmitArrayOrientation;
+        end
         obj.theBSMap(bs.ID) = struct(Node=bs,NodeSubs=subs,OFDMInfo=ofdmInfo,TXRUVirtualization=virt,TransmitArrayOrientation=txorientation);
 
         for j = 1:numel(UEs{i})
@@ -1221,6 +1246,10 @@ function recordNodes(obj,sls,cfg)
                 n_fl = getFieldColumnOrDefault(chCfg,"n_fl",el,default_n_fl);
                 d_2D_in = getFieldColumnOrDefault(chCfg,"d_2D_in",el,0);
                 rxorientation = getFieldColumnOrDefault(chCfg,"ReceiveArrayOrientation",el,[]);
+            end
+
+            if isempty(rxorientation) && ~isequal(ue.ReceiveArrayOrientation, [0;0;0])
+                rxorientation = ue.ReceiveArrayOrientation;
             end
 
             firstUE = false;
@@ -1489,5 +1518,25 @@ function validateSpatialConsistency(val)
         matlab.system.mustBeMember(val, ...
             ["None" "Static" "ProcedureA" "ProcedureB"]);
     end
+
+end
+
+function chcfg = configureAntennaArrays(chcfg, isUplink, txNode, rxNode)
+% Set TransmitAntennaArray and ReceiveAntennaArray on the channel config
+% from the node properties.
+
+    if (isnan(isUplink))
+        txArray = txNode.TransmitAntennaArray;
+        rxArray = rxNode.ReceiveAntennaArray;
+    elseif (isUplink)
+        txArray = txNode.ReceiveAntennaArray;
+        rxArray = rxNode.TransmitAntennaArray;
+    else
+        txArray = txNode.TransmitAntennaArray;
+        rxArray = rxNode.ReceiveAntennaArray;
+    end
+
+    chcfg.TransmitAntennaArray = txArray;
+    chcfg.ReceiveAntennaArray = rxArray;
 
 end
