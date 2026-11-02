@@ -1,58 +1,88 @@
-# Wireless Network Modeling Workshop
-This hands-on workshop features guided exercises that teach the end-to-end workflow for modeling 5G and WLAN networks in MATLAB®. 
-You'll also explore how to model and simulate wireless coexistence scenarios, using WLAN and Bluetooth as a practical example.
-Through these exercises, you'll write and run your code in MATLAB and discover how to model and simulate cellular and connectivity networks with minimal coding. 
-You'll also learn how to visualize and analyze key performance metrics, enabling faster insights into network behavior and design trade-offs.
+# 5G Network Modeling Workshop
 
-## Who Should Take the Workshop:
-This workshop is intended for wireless system architects and engineers, MAC and PHY engineers, and wireless researchers.
+## Overview
+The **5G Network Modeling Workshop** provides hands-on exercises to help you learn the end-to-end 5G network modeling workflow in MATLAB.
 
-## What Attendees Will Learn:
-* MATLAB-based Workflow for 5G, WLAN, and Bluetooth Network Modeling
-* Simulate standards-based networks and measure key network KPIs
-* Visualize network behavior in real time and log performance for post-processing and analysis
-* Model typical and custom network scenarios to evaluate overall performance.
+## What You Will Learn
+
+With minimal coding effort, you will be able to:
+- Create a 5G network scenario
+- Configure 5G network nodes
+- Add mobility and traffic models
+- Specify the 3GPP TR 38.901 Channel models
+- Run simulations of the 5G scenario
+- Visualize network behavior
+- Evaluate key performance metrics
+
+## Key Highlights
+- Guided, step-by-step exercises  
+- Minimal coding effort required  
+- Focus on practical, real-world scenarios  
+
+## Target Audience
+This content is intended for:
+- 5G system engineers
+- PHY/MAC engineers working with or exploring system-level 5G wireless network simulations in MATLAB
+- Scientists and engineers involved in 5G standards development
+
+## Repository Overview
+This repository contains the files required to run the hands-on **5G Network Modeling Workshop** in MATLAB®.
+
+- **Exercise files** require you to add code to complete the tasks  
+- **Solution scripts** include the completed code and run end-to-end  
+
+## Exercises Included
+
+The repository includes the following exercises:
+
+1. **Exercise 1** – Operate the simulation engine, configure 5G nodes, create a simple network, and view performance statistics  
+2. **Exercise 2** – 5G inter-cell interference modeling  
+3. **Exercise 3** – Integrate a custom downlink channel into the simulated 5G network  
+4. **Exercise 4** – Model MU-MIMO and Integrate a custom scheduler into the 5G network model  
+
 
 ## Setup
-This repo contains the files required to run the hands-on Wreless network modeling workshop in MATLAB®. The "Exercise" files require code additions to  
-run.  The "Solution Scripts" files have the required code additions and run to completion.
 
-The files enable the following exercises:
-1. Exercise 1 - Operate the simulation engine, configure 5G nodes, create a simple network, and see statistics
-2. Exercise 2 - Operate the simulation engine, configure WLAN nodes, create a simple network, and see statistics
+### For Hands-On Workshop
+1. Use the **Exercise files** and complete the required code additions.
 
-To Run:
-1. To conduct the workshop, use the "Exercise" files
-2. To simply run the completed exercises, run the following files in MATLAB:
+### To Run Completed Exercises
+Run the following files in MATLAB:
 
-* EXPL1\_NR\_Simplest\_Network.mlx
-* EXPL2\_WLAN\_Simplest\_Network.mlx
+- `SOLN1_NR_Simplest_Network.mlx`  
+- `SOLN2_NR_Interference_Modeling.mlx` 
+- `SOLN3_NR_Custom_Channel.mlx`  
+- `SOLN4_NR_MU_MIMO.mlx`  
 
-## Required MathWorks Products (https://www.mathworks.com)
-Requires MATLAB release R2025a or newer
 
-* [Communications Toolbox Wireless Network Simulation Library;](https://www.mathworks.com/matlabcentral/fileexchange/119923-communications-toolbox-wireless-network-simulation-library)
+### MathWorks Products (https://www.mathworks.com)
+
+Requires the latest MATLAB release
+
+* [Wireless Network Toolbox™](https://www.mathworks.com/products/wireless-network.html)
 * [5G Toolbox™](https://www.mathworks.com/products/5g.html)
-* [WLAN Toolbox&trade;](https://www.mathworks.com/products/wlan.html)
-* [Bluetooth Toolbox&trade;](https://www.mathworks.com/products/bluetooth.html)
 * [DSP System Toolbox™](https://www.mathworks.com/products/dsp-system.html)
 * [Communications Toolbox™](https://www.mathworks.com/products/communications.html)
 * [Signal Processing Toolbox™](https://www.mathworks.com/products/signal.html)
 
+### 3rd Party Products:
+
+* None
+
 ## Getting Started
-See https://www.mathworks.com/help/wlan/ug/getting-started-with-wlan-system-level-simulation-in-matlab.html
+
+* [5G Network Modeling Documentation](https://www.mathworks.com/help/5g/ug/overview-system-level-simulation-in-5g-network-analysis.html) 
 
 ## Examples
-To see additional wireless network simulation examples that perform  
-similar workflows as those in the workshop, see:
 
-1.  https://www.mathworks.com/help/5g/ug/nr-cell-performance-evaluation-with-mimo.html
-2.  https://www.mathworks.com/help/wlan/ug/802-11be-system-level-simulation-using-emlsr-multi-link-operation.html
+* [5G Network Modeling Examples](https://www.mathworks.com/help/5g/examples.html?s_tid=CRUX_topnav&category=system-level-simulation)
 
 ## License
-The license for the Wireless-Network-Modeling-Workshop is available in the LICENSE.TXT file in this GitHub repository.
+
+The license for the 5G-Network-Modeling-Workshop is available in the LICENSE.TXT file in this GitHub repository.
 
 ## Community Support
+
 [MATLAB Central](https://www.mathworks.com/matlabcentral)
 
 Copyright 2025 The MathWorks, Inc.
